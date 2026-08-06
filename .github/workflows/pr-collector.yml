@@ -1,0 +1,52 @@
+name: PR Collector & Deploy Notifier
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # 每 30 分鐘執行（UTC）；窗口外由腳本即刻結束
+  workflow_dispatch:        # 支援手動觸發（測試用）
+
+permissions:
+  contents: write
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install requests
+      - name: Run PR collector
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: python scripts/collect_prs.py
+      - name: Commit state if changed
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add state.json
+          git diff --staged --quiet && exit 0
+          git commit -m "chore: update deployment state"
+          for i in 1 2 3 4 5; do
+            if git pull --rebase --autostash origin main && git push; then
+              echo "state.json pushed (attempt $i)"
+              exit 0
+            fi
+            echo "push rejected, retry $i"; sleep 5
+          done
+          echo "::error::state.json push failed after 5 retries"
+          WEBHOOK=$(jq -r '.tpm.teams_personal_webhook_url // ""' config.json)
+          if [ -n "$WEBHOOK" ] && ! printf '%s' "$WEBHOOK" | grep -q "FILL_IN"; then
+            RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            MSG=$(printf '⚠️ PR Collector：state.json 連續 5 次 push 失敗，本輪狀態未落地，請人工確認。\nRun：%s' "$RUN_URL")
+            curl -sS -X POST -H 'Content-Type: application/json' -d "$(jq -n --arg m "$MSG" '{message:$m}')" "$WEBHOOK" || true
+          fi
+          exit 1

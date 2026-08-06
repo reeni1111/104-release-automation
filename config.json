@@ -1,0 +1,55 @@
+{
+  "github": {
+    "owner": "FILL_IN_github_owner",
+    "repo": "FILL_IN_repo_name"
+  },
+  "jira": {
+    "cloud_id": "FILL_IN_jira_cloud_id",
+    "base_url": "https://FILL_IN_your_site.atlassian.net/browse"
+  },
+  "tpm": {
+    "name": "FILL_IN_TPM_姓名",
+    "jira_account_id": "FILL_IN_TPM_jira_account_id",
+    "email": "FILL_IN_TPM_email",
+    "teams_personal_webhook_url": "FILL_IN_power_automate_personal_webhook"
+  },
+  "products": {
+    "FILL_IN_產品觸發關鍵字": {
+      "display_name": "FILL_IN_顯示名稱",
+      "hosting": "FILL_IN_aws_或_k8s",
+      "deploy_time": "FILL_IN_如_12:00",
+      "jira_deploy_project": "FILL_IN",
+      "jira_deploy_issue_type_id": "FILL_IN",
+      "jira_product_project": "FILL_IN",
+      "jira_epic_type_id": "FILL_IN",
+      "jira_web_api_field": "FILL_IN_customfield",
+      "jira_q_date_field": "FILL_IN_customfield",
+      "jira_deploy_date_field": "FILL_IN_customfield",
+      "jira_domain_field": "FILL_IN_customfield",
+      "jira_domain_parent_id": "FILL_IN",
+      "jira_domain_child_id": "FILL_IN",
+      "jira_assignee_account_id": "FILL_IN",
+      "jira_engineer_field": "FILL_IN_customfield",
+      "jira_sign_manager_account_id": "FILL_IN_簽核主管jira_account_id",
+      "jira_system_level": "13204",
+      "repos": [
+        "FILL_IN_org/repo-1"
+      ],
+      "repo_display_names": {
+        "FILL_IN_org/repo-1": "FILL_IN_短標籤"
+      },
+      "k8s_subtickets": {
+        "FILL_IN_org/repo-1": "FILL_IN_argocd_app_name"
+      },
+      "teams_deploy_channel_webhook_url": "FILL_IN_上線作業頻道_webhook",
+      "teams_product_channel_webhook_url": "FILL_IN_產品頻道_webhook",
+      "talent_engineering_members": [
+        { "name": "FILL_IN_姓名", "aad_id": "FILL_IN_aad_id" }
+      ],
+      "approvers": [
+        { "name": "FILL_IN_簽核人", "aad_id": "FILL_IN_aad_id" }
+      ]
+    }
+  },
+  "approvers": []
+}

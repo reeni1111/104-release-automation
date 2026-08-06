@@ -1,0 +1,26 @@
+name: Notify Deploy Channel
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - state.json
+  workflow_dispatch:
+    inputs:
+      product_name:
+        description: '指定產品名稱（如「農場」），留空則發送所有 active 產品'
+        required: false
+        default: ''
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Send Teams deploy notification
+        env:
+          NOTIFY_PRODUCT: ${{ github.event.inputs.product_name }}
+        run: python scripts/notify_deploy.py

@@ -1,0 +1,25 @@
+name: Notify Signing Channel
+
+on:
+  workflow_dispatch:
+    inputs:
+      product_name:
+        description: '指定單一產品名稱（如「GO」），必填；本工具不支援一次發送全部'
+        required: true
+      force:
+        description: '覆蓋防呆：status=completed 或尚未收集到 PROD PR 時仍發送'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Send Teams signing notification (通知②)
+        env:
+          NOTIFY_PRODUCT: ${{ github.event.inputs.product_name }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: python scripts/notify_signing.py
