@@ -1,4 +1,4 @@
-# 104 Release Workflow — Template Repo
+# 自動化開單
 
 複製本 template 到你自己的 GitHub repo，依「操作手冊」設定後即可用 skill 日常維運上線。
 skill 會依 `config.json` 的 `github.owner` / `github.repo` 操作，**不需要改 skill**。
