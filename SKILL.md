@@ -21,7 +21,7 @@ description: >
   ┌─────────────────────────────────┐
   │ Step 1  建立 Jira 上線單         │
   │ Step 2  建立 Jira Epic           │
-  │ Step 3  上線單 depends on Epic   │
+  │ Step 3  Epic depends on 上線單   │
   │ Step 4  上線單 description 插入  │
   │         Epic JQL 連結            │
   │ Step 4.5 建 K8s 子單（限地端）   │
@@ -219,7 +219,7 @@ stg_date = subtract_working_days(deploy_date, 2)    # 上STG日＝上線日 −2
 
 ---
 
-## Step 3：連結上線單與 Epic（depends on）
+## Step 3：連結上線單與 Epic（Epic depends on 上線單）
 
 工具：`mcp__Atlassian_Rovo__createIssueLink`
 
@@ -227,12 +227,12 @@ stg_date = subtract_working_days(deploy_date, 2)    # 上STG日＝上線日 −2
 {
   "cloudId": "{CONFIG.jira.cloud_id}",
   "type": "Depends(WBSGantt)",
-  "inwardIssue": "{deploy_issue_key}",
-  "outwardIssue": "{epic_key}"
+  "inwardIssue": "{epic_key}",
+  "outwardIssue": "{deploy_issue_key}"
 }
 ```
 
-效果：上線單顯示「**depends on** {epic_key}」（Depends(WBSGantt) 關係）。link type id `10302` 僅供參考，MCP 現行版以名稱（`type`）呼叫。
+效果：上線單顯示「**is depended on by** {epic_key}」（Depends(WBSGantt) 關係）。link type id `10302` 僅供參考，MCP 現行版以名稱（`type`）呼叫。
 
 ---
 
@@ -496,7 +496,7 @@ PR 建立後，告知使用者連結，等待簽核後 merge。
 ✅ Step 2  Epic 建立：{epic_key}
            https://{your-site}.atlassian.net/browse/{epic_key}
 
-✅ Step 3  上線單 depends on Epic 已連結
+✅ Step 3  Epic depends on 上線單 已連結
 
 ✅ Step 4  Epic 工作項目連結已插入上線單描述欄
 
@@ -963,7 +963,7 @@ AUTH=(-u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Content-Type: application/json")
 
 - **Step 1 上線單**：`curl -sS "${AUTH[@]}" -X POST "$BASE/issue" -d '<Step 1 fields JSON>'` → 取回傳 `.key` 存為 `DEPLOY_KEY`。
 - **Step 2 Epic**：POST `$BASE/issue`（`projectKey`＝`product_config.jira_product_project`、issuetype「大型工作」、summary「{yyyymmdd} 上線」、`customfield_10014` 同名）→ `.key` 存 `EPIC_KEY`。
-- **Step 3 depends**：POST `$BASE/issueLink`，`{"type":{"name":"Depends(WBSGantt)"},"inwardIssue":{"key":"<DEPLOY_KEY>"},"outwardIssue":{"key":"<EPIC_KEY>"}}`。
+- **Step 3 depends**：POST `$BASE/issueLink`，`{"type":{"name":"Depends(WBSGantt)"},"inwardIssue":{"key":"<EPIC_KEY>"},"outwardIssue":{"key":"<DEPLOY_KEY>"}}`。
 - **Step 4 描述**：PUT `$BASE/issue/<DEPLOY_KEY>`，body 為 Step 4 的 ADF `blockCard`（jql 帶 `<EPIC_KEY>`，datasource id `{FILL_IN_datasource_id}`）。
 - **Step 4.5 K8s 子單**（僅 `hosting=k8s`）：對 `build_k8s_specs(product_config, sites)` 產出的每個 spec，POST `$BASE/issue`（issuetype「(Sub) K8s上線」、頂層 `parent`＝`<DEPLOY_KEY>`、assignee＝`CONFIG.tpm.jira_account_id`、DR 子單另帶 `customfield_14301:"Y"`）。
 - **Step 5 state.json＋PR**（本機 git，取代 GitHub MCP）：
