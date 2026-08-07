@@ -120,34 +120,46 @@ def main():
     event_name     = os.environ.get('GITHUB_EVENT_NAME', 'push')
     notify_product = os.environ.get('NOTIFY_PRODUCT', '').strip()
 
+    to_notify_pairs = []  # (product_name, deployment_dict)
+
     if event_name == 'workflow_dispatch':
-        # 手動觸發：指定產品 or 全部 active 產品
+        # 手動觸發（Mod E）：指定產品 or 全部 active 產品，同時包含 pending_queue
         active = new_state.get('active_deployments', {})
         if notify_product and notify_product in active:
-            to_notify = [notify_product]
+            products = [notify_product]
         elif notify_product:
             print(f"WARN: '{notify_product}' not in active_deployments, sending all.")
-            to_notify = list(active.keys())
+            products = list(active.keys())
         else:
-            to_notify = list(active.keys())
-        print(f"[workflow_dispatch] Notifying: {to_notify}")
+            products = list(active.keys())
+        print(f"[workflow_dispatch] Notifying: {products}")
+        for p in products:
+            dep = active[p]
+            to_notify_pairs.append((p, dep))
+            for entry in dep.get('pending_queue', []):
+                to_notify_pairs.append((p, entry))
     else:
-        # push 觸發：deploy_date 有變動的產品才發送
+        # push 觸發（Mod C）：deploy_date 有變動才發送；新增的 pending_queue 也發送
         old_state = get_previous_state()
         old_deployments = old_state.get('active_deployments', {})
         new_deployments = new_state.get('active_deployments', {})
-        to_notify = [
-            p for p in new_deployments
-            if new_deployments[p]['deploy_date'] != old_deployments.get(p, {}).get('deploy_date')
-        ]
-        if not to_notify:
+        for p in new_deployments:
+            new = new_deployments[p]
+            old = old_deployments.get(p, {})
+            old_pending_dates = {e['deploy_date'] for e in old.get('pending_queue', [])}
+            if new['deploy_date'] != old.get('deploy_date'):
+                if new['deploy_date'] not in old_pending_dates:
+                    to_notify_pairs.append((p, new))
+            for entry in new.get('pending_queue', []):
+                if entry['deploy_date'] not in old_pending_dates:
+                    to_notify_pairs.append((p, entry))
+        if not to_notify_pairs:
             print("No deploy_date changes detected, nothing to notify.")
             return
 
     errors = []
-    for product_name in to_notify:
-        print(f"[{product_name}] Sending notification...")
-        deployment     = new_state['active_deployments'][product_name]
+    for product_name, deployment in to_notify_pairs:
+        print(f"[{product_name}] deploy_date={deployment['deploy_date']} Sending notification...")
         product_config = config['products'].get(product_name)
 
         if not product_config:
