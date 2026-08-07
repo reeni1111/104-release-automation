@@ -21,7 +21,7 @@ description: >
   ┌─────────────────────────────────┐
   │ Step 1  建立 Jira 上線單         │
   │ Step 2  建立 Jira Epic           │
-  │ Step 3  Epic depends on 上線單   │
+  │ Step 3  上線單 depends on Epic   │
   │ Step 4  上線單 description 插入  │
   │         Epic JQL 連結            │
   │ Step 4.5 建 K8s 子單（限地端）   │
@@ -219,7 +219,7 @@ stg_date = subtract_working_days(deploy_date, 2)    # 上STG日＝上線日 −2
 
 ---
 
-## Step 3：連結上線單與 Epic（Epic depends on 上線單）
+## Step 3：連結上線單與 Epic（depends on）
 
 工具：`mcp__Atlassian_Rovo__createIssueLink`
 
@@ -496,7 +496,7 @@ PR 建立後，告知使用者連結，等待簽核後 merge。
 ✅ Step 2  Epic 建立：{epic_key}
            https://{your-site}.atlassian.net/browse/{epic_key}
 
-✅ Step 3  Epic depends on 上線單 已連結
+✅ Step 3  上線單 depends on Epic 已連結
 
 ✅ Step 4  Epic 工作項目連結已插入上線單描述欄
 
