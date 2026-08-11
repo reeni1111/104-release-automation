@@ -226,7 +226,7 @@ Merge 完成後，GitHub Actions 自動觸發 Teams 上線頻道通知。
 20260707 職場力 上線單
 
 預計 7/3 上STG，7/7 10:00 上線
-• 上線單：https://104corp.atlassian.net/browse/ITPMTALREQ-8686
+• 上線單：https://{jira-base-url}/browse/{ITPMTALREQ-XXXX}
 
 以下內容請於討論串留言
 1. STG PR 簽核
@@ -236,7 +236,7 @@ Merge 完成後，GitHub Actions 自動觸發 Teams 上線頻道通知。
 5. SRE 開單申請
 6. Rundown
 
-@Jimmy Chuang 莊泓桀 @James YJ Lin 林毓鈞 @Haining Hsu 許海寧
+@{工程師A} @{工程師B} @{工程師C}
 ```
 
 ### 4.3 pr-collector.yml（PR 搜集、狀態轉換、簽核通知、人工提醒）
@@ -272,13 +272,13 @@ Merge 完成後，GitHub Actions 自動觸發 Teams 上線頻道通知。
 ```
 [STG PR]
 • Resume API：
-    ◦ https://github.com/104corp/104-talent-resume-api/pull/58
-    ◦ https://github.com/104corp/104-talent-resume-api/pull/60
-• Rundeck：https://github.com/104corp/104-rundeck-talent-resume/pull/12
+    ◦ https://github.com/{org}/{repo-name}/pull/{N}
+    ◦ https://github.com/{org}/{repo-name}/pull/{N+1}
+• Rundeck：https://github.com/{org}/{repo-name}/pull/{N}
 
 [PROD PR]
-• Resume API：https://github.com/104corp/104-talent-resume-api/pull/64
-• Rundeck：https://github.com/104corp/104-rundeck-talent-resume/pull/13
+• Resume API：https://github.com/{org}/{repo-name}/pull/{N}
+• Rundeck：https://github.com/{org}/{repo-name}/pull/{N}
 ```
 
 > 清單為 Jira 原生 bullet list（ADF bulletList），縮排不會因 wiki 樣式流失。
@@ -302,11 +302,11 @@ Merge 完成後，GitHub Actions 自動觸發 Teams 上線頻道通知。
 ```
 🚀 PROD PR 簽核通知｜職場力 20260707
 
-@Ascii Huang 黃柏源 @AK Lee 李建寬 Hi all，職場力本次上線所有 PROD PR 已就緒，請抽空簽核上線單與 PR，感謝
+@{簽核人A} @{簽核人B} Hi all，職場力本次上線所有 PROD PR 已就緒，請抽空簽核上線單與 PR，感謝
 
-- 上線單：https://104corp.atlassian.net/browse/ITPMTALREQ-8686
+- 上線單：https://{jira-base-url}/browse/{ITPMTALREQ-XXXX}
 - PR：
-   - Frontend：https://github.com/104corp/104-CMS-Frontend/pull/4298
+   - Frontend：https://github.com/{org}/{repo-name}/pull/{N}
 ```
 
 ### 4.4 多張上線單管理規則
@@ -347,7 +347,7 @@ Merge 完成後，GitHub Actions 自動觸發 Teams 上線頻道通知。
 3. 把 template 檔案推上去（Terminal，`{your-org}/{your-repo}` 換成你的）：
 
 ```bash
-cd 104-release-workflow-template          # 進入解壓後的資料夾（含 config.json、scripts/、.github/）
+cd {解壓後的資料夾名}                      # 進入解壓後的資料夾（含 config.json、scripts/、.github/）
 git init
 git add .
 git commit -m "init from 104-release-workflow template"
@@ -451,7 +451,7 @@ GET https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail
 GET https://graph.microsoft.com/v1.0/users/{同事email}?$select=id,displayName,mail
 ```
 
-例：`GET https://graph.microsoft.com/v1.0/users/jodie.lin@104.com.tw?$select=id,displayName,mail`
+例：`GET https://graph.microsoft.com/v1.0/users/{同事email}?$select=id,displayName,mail`
 
 **查同事（依姓名，中文可能有編碼問題）：**
 
