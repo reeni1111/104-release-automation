@@ -20,7 +20,7 @@ skill 會依 `config.json` 的 `github.owner` / `github.repo` 操作，**不需�
 2. 把本 template 全部檔案（含 `.github/`）推上去（`{your-org}/{your-repo}` 換成你的）：
 
 ```bash
-cd 104-release-workflow-template          # 進入解壓後的資料夾
+cd {解壓後的資料夾名}                      # 進入解壓後的資料夾
 git init
 git add .
 git commit -m "init from 104-release-workflow template"
