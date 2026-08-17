@@ -346,6 +346,7 @@ def _activate_next_pending(deployment: dict, repos: list) -> bool:
     queue = deployment.get("pending_queue", [])
     if not queue:
         return False
+    queue.sort(key=lambda e: e["deploy_date"])  # 確保升格的是上線日最早的條目
     nxt = queue.pop(0)
     deployment.update({
         "deploy_date":        nxt["deploy_date"],
@@ -363,6 +364,44 @@ def _activate_next_pending(deployment: dict, repos: list) -> bool:
     deployment.pop("manual_notice_sent", None)
     deployment.pop("stopped_reason", None)
     print(f"  🔄 Activated next pending: {nxt['deploy_issue_key']} ({nxt['deploy_date']})")
+    return True
+
+
+def _normalize_priority(deployment: dict, repos: list) -> bool:
+    """
+    若 pending_queue 中有比目前 active 更早的 deploy_date，
+    自動升格為 active，原 active 降回 pending_queue（並按 deploy_date 排序）。
+    回傳 True 表示有發生調整。
+    """
+    queue = deployment.get("pending_queue", [])
+    if not queue:
+        return False
+    earliest = min(queue, key=lambda e: e["deploy_date"])
+    if earliest["deploy_date"] >= deployment["deploy_date"]:
+        return False  # 目前 active 已是最早，無需調整
+    # 建立舊 active 的 pending entry（5 個欄位）
+    old_entry = {k: deployment[k] for k in
+                 ("deploy_date", "stg_date", "deploy_issue_key", "deploy_issue_url", "epic_key")}
+    # 新 pending_queue：移除被升格的條目，加入舊 active，按日期排序
+    new_queue = [e for e in queue if e is not earliest] + [old_entry]
+    new_queue.sort(key=lambda e: e["deploy_date"])
+    print(f"  🔄 優先序調整：{earliest['deploy_issue_key']}（{earliest['deploy_date']}）→ active；"
+          f"{old_entry['deploy_issue_key']}（{old_entry['deploy_date']}）→ pending_queue")
+    deployment.update({
+        "deploy_date":        earliest["deploy_date"],
+        "stg_date":           earliest["stg_date"],
+        "deploy_issue_key":   earliest["deploy_issue_key"],
+        "deploy_issue_url":   earliest["deploy_issue_url"],
+        "epic_key":           earliest["epic_key"],
+        "stg_prs":            {repo: [] for repo in repos},
+        "prod_prs":           {repo: None for repo in repos},
+        "stg_status_updated": False,
+        "signing_notified":   False,
+        "status":             "active",
+        "pending_queue":      new_queue,
+    })
+    deployment.pop("manual_notice_sent", None)
+    deployment.pop("stopped_reason", None)
     return True
 
 
@@ -407,6 +446,17 @@ def main():
         if "pending_queue" not in deployment:
             deployment["pending_queue"] = []
             state_changed = True
+
+        # 優先序正規化：若 pending_queue 有更早的上線日，自動升為 active
+        if _normalize_priority(deployment, repos):
+            state_changed = True
+            deploy_date_str = deployment["deploy_date"]
+            deploy_date     = datetime.strptime(deploy_date_str, "%Y%m%d").date()
+            tokens          = deploy_date_tokens(deploy_date_str)
+            issue_key       = deployment["deploy_issue_key"]
+            stg_start       = subtract_working_days(deploy_date, 3)
+            prod_start      = subtract_working_days(deploy_date, 1)
+            prod_cutoff     = deploy_date + timedelta(days=1)
 
         print(f"\n{'='*55}")
         print(f"📦 {product_name} | deploy={deploy_date_str} | today={today} | {issue_key}")
@@ -508,6 +558,8 @@ def main():
                         deployment["status"] = "completed"
                         deployment["stopped_reason"] = "manual"
                         state_changed = True
+                        if _activate_next_pending(deployment, repos):
+                            state_changed = True
                     else:
                         print("  ⚠️  轉「簽核中」失敗 → 保持 active，下輪重試（通知③僅首次發送）")
                         if not deployment.get("manual_notice_sent"):
@@ -520,6 +572,8 @@ def main():
                 deployment["status"] = "completed"
                 deployment["stopped_reason"] = "timeout"
                 state_changed = True
+                if _activate_next_pending(deployment, repos):
+                    state_changed = True
 
     if state_changed:
         with open(ROOT / "state.json", "w", encoding="utf-8") as f:
