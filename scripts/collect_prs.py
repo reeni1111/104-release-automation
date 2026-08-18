@@ -428,6 +428,10 @@ def main():
         deploy_date_str = deployment["deploy_date"]
         deploy_date     = datetime.strptime(deploy_date_str, "%Y%m%d").date()
         tokens          = deploy_date_tokens(deploy_date_str)
+        # 支援單次補漏（例如工程師 PR title 日期 typo）；無此欄位的部署不受影響
+        for t in deployment.get("extra_search_tokens", []):
+            if t not in tokens:
+                tokens.append(t)
         issue_key       = deployment["deploy_issue_key"]
         field_id        = product_config["jira_web_api_field"]
         repos           = product_config["repos"]
