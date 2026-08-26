@@ -94,25 +94,43 @@ def deploy_date_tokens(deploy_date_str: str) -> list:
     return out
 
 
-def search_merged_prs_by_title(repo: str, tokens: list, pr_state: str = "merged") -> list:
-    """搜集 title 含任一上線日 token 的 PR（依 pr_state 篩選，跨 token 去重）。
-    pr_state：STG 用 "merged"（已上 STG 才貼上線單）；PROD 用 "open"（簽核在 merge 之前）。
-    使用 GitHub Search API，完全不依賴 head/base 分支名稱。
-    回傳 [{"title": ..., "html_url": ...}]。"""
-    found = {}
-    for token in tokens:
-        q = f"repo:{repo} is:pr is:{pr_state} in:title {token}"
+def _gh_search_with_retry(q: str, max_retries: int = 3) -> list:
+    """呼叫 GitHub Search API，遇 403 自動 retry + exponential backoff。
+    回傳 items list；全部重試失敗回空 list。"""
+    backoff_secs = [5, 15, 30]
+    for attempt in range(max_retries + 1):
         resp = requests.get(
             "https://api.github.com/search/issues",
             headers=GH_HEADERS,
             params={"q": q, "per_page": 100},
         )
-        if resp.status_code != 200:
-            print(f"  ⚠️  search {repo} (token={token}): HTTP {resp.status_code}")
-            continue
-        for item in resp.json().get("items", []):
+        if resp.status_code == 200:
+            return resp.json().get("items", [])
+        if resp.status_code == 403 and attempt < max_retries:
+            wait = int(resp.headers.get("Retry-After",
+                                        backoff_secs[min(attempt, len(backoff_secs) - 1)]))
+            print(f"  ⏳ search ({q[:60]}…): HTTP 403, "
+                  f"retry {attempt + 1}/{max_retries} after {wait}s")
+            time.sleep(wait)
+        else:
+            print(f"  ⚠️  search ({q[:60]}…): HTTP {resp.status_code}")
+            return []
+    return []
+
+
+def search_merged_prs_by_title(repo: str, tokens: list, pr_state: str = "merged") -> list:
+    """搜集 title 含任一上線日 token 的 PR（依 pr_state 篩選，跨 token 去重）。
+    pr_state：STG 用 "merged"（已上 STG 才貼上線單）；PROD 用 "open"（簽核在 merge 之前）。
+    使用 GitHub Search API，完全不依賴 head/base 分支名稱。
+    遇 HTTP 403（secondary rate limit）自動 retry + exponential backoff。
+    回傳 [{"title": ..., "html_url": ...}]。"""
+    found = {}
+    for token in tokens:
+        q = f"repo:{repo} is:pr is:{pr_state} in:title {token}"
+        items = _gh_search_with_retry(q)
+        for item in items:
             found[item["html_url"]] = item.get("title", "")
-        time.sleep(1)  # GitHub Search API 節流
+        time.sleep(2)  # GitHub Search API 節流（加長間隔避免觸發 secondary rate limit）
     return [{"title": t, "html_url": u} for u, t in found.items()]
 
 
