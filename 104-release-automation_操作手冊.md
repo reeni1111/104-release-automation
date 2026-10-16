@@ -1,7 +1,7 @@
 # 104 Release Workflow 操作手冊
 
 > 適用對象：TPM
-> 最後更新：2026-07-16
+> 最後更新：2026-10-16
 
 ---
 
@@ -61,7 +61,7 @@
 | **AAD Object ID** | 微軟帳號的唯一識別碼，用於在 Teams 通知中 @mention 指定成員 |
 | **Description（上線單）** | Jira 上線單的描述欄位。系統建立上線單後，會在此欄位插入一個動態表格，自動列出本次 Epic 底下所有工作項目（依 JQL 查詢即時更新） |
 | **Adaptive Card** | Microsoft Teams 的訊息卡片格式，可在 Teams 頻道或聊天中顯示結構化內容（標題、內文、連結等），並支援 @mention 成員。本系統的頻道通知皆以此格式發送 |
-| **GitHub Actions** | GitHub 內建的自動化執行環境。本系統用它執行兩個排程：state.json 有變動時立即發通知①，以及每 30 分鐘（窗口制）搜集 STG/PROD PR、轉換 Jira 狀態並發簽核通知 |
+| **GitHub Actions** | GitHub 內建的自動化執行環境。本系統用它執行兩個排程：state.json 有變動時立即發通知①，以及每 10 分鐘（窗口制）搜集 STG/PROD PR、轉換 Jira 狀態並發簽核通知 |
 | **Power Automate** | 微軟的自動化流程工具（Microsoft 365 服務）。本系統用它建立一個 HTTP trigger 流程，接收 GitHub Actions 的呼叫後，將訊息發送到 TPM 的 Teams 個人聊天（用於通知③） |
 | **Jira Cloud ID** | 104 Jira 站台的唯一識別碼（`config.json` 的 `jira.cloud_id`）。每次呼叫 Jira API 都要帶它以指定「對哪個 Jira 站台操作」。全公司只有一個 Jira，所有產品共用、固定不變 |
 | **Jira Base URL** | Jira 單子的網址前綴（`config.json` 的 `jira.base_url`，如 `https://104corp.atlassian.net/browse`）。用來把單號組成可點擊連結（如 `…/browse/ITPMTALREQ-8600`）放進 Teams 通知與 state.json。全站共用 |
@@ -72,6 +72,8 @@
 | **`to.name`（目的地狀態名）** | 某個 transition「按下去會到達的狀態」的名稱。程式靠比對它挑出正確的 transition（不依賴 transition 名稱或 id） |
 | **hosting（託管環境）** | 產品部署所在環境：`aws`（雲端）或 `k8s`（地端），記於 `config.json` 每個產品的 `hosting`。地端產品上線時需額外建立 K8s 上線子單 |
 | **K8s 上線子單** | 地端（hosting=k8s）產品專用：上線單底下的子工作（Jira sub-task），每個部署 repo 一張，帶 ArgoCD Application 與部署分支資訊，用來觸發該 repo 的 K8s 部署 pipeline。子單名稱＝純 `{name}`（無前綴） |
+| **hotfix 單** | 以「`{YYYYMMDD} {產品名} hotfix`」建立的緊急上線單（同 issue type，標題 `{顯示名稱} - hotfix {M/D}`，送Q 11:00、上線 12:00 同一天）；與維運上線單完全獨立追蹤，PR title 須含 `hotfix` |
+| **緊急簽核** | hotfix 單的簽核狀態；由 TPM 手動觸發「緊急上線」轉換到達。程式偵測到此狀態（或之後）且 PROD PR 收齊才發 hotfix 版通知② |
 | **DR 站子單** | 指令帶 `dr` 時，每個 repo 於主站子單外**另建一張** DR 站子單：名稱 `{name} dr site`、ArgoCD 樣板 `stg-dr-{name}`／`prod-dr-{name}`、組態設定=Y（主站子單不填組態設定） |
 
 ---
@@ -95,7 +97,7 @@ TPM 輸入「YYYY/MM/DD {產品名}」（地端產品輸入「YYYY/MM/DD {產品
       │       Adaptive Card @mention 全體工程師
       │       內容：上線日期、上STG日期、Jira 上線單連結
       │
-      ▼ GitHub Actions 窗口制排程（每 30 分鐘）
+      ▼ GitHub Actions 窗口制排程（每 10 分鐘）
   上線日 −3 工作天起：搜集 STG PR → 更新 Jira Web/API 程式資訊 → 首筆轉狀態「已更新Staging」
       │
       ▼ 上線日 −1 工作天起
@@ -107,11 +109,35 @@ TPM 輸入「YYYY/MM/DD {產品名}」（地端產品輸入「YYYY/MM/DD {產品
       │
       ├─ 轉單失敗 ──▶ 【通知③】TPM 個人聊天（Exception）
       │                   Power Automate 發訊息：「{產品名}：需人工轉單」
-      │                   → 排程每 30 分自動重試（通知③僅首次發送），可等自動重試或手動轉單
+      │                   → 排程每 10 分自動重試（通知③僅首次發送），可等自動重試或手動轉單
       │                   （超過上線日 +1 日曆天仍失敗 → 再發通知③一次並終止）
       │
       └─ 安全停損 ──▶ 上線日 +1 日曆天仍未蒐齊 PROD PR
                           → 【個人聊天告警】TPM 個人聊天，終止
+```
+
+### Hotfix 流程（與上方維運流程完全獨立）
+
+```
+TPM 輸入「{YYYYMMDD} {產品名} hotfix」
+      │
+      ▼ Claude 自動執行
+  hotfix 單建立（送Q 11:00、上線 12:00 同一天）→ Epic「[hotfix] {YYYYMMDD} 上線」→ 連結 → 插入 Epic 工作項目連結
+  → 開 PR（state.json 新增「{產品名} hotfix {YYYYMMDD}」條目）
+      │
+      ▼ TPM review PR → Merge
+      │
+      ├─▶ 【通知①（hotfix 版）】Teams 上線作業頻道，@mention 工程師
+      │
+      ▼ 每 10 分鐘搜集（不套窗口）：title 含日期 + stg/prod + hotfix
+  STG（已 merged）、PROD（open 或已 merged）→ 更新 Jira Web/API 程式資訊（程式不轉狀態）
+      │
+      ▼ TPM 手動觸發「緊急上線」→ 狀態「緊急簽核」
+      ├─ PROD 已收齊 ──▶ 【通知②（hotfix 版）】Teams 產品頻道 @mention 簽核人，終止
+      └─ PROD 未收齊 ──▶ 【TPM 個人通知】（僅一次），持續搜集；收齊後補發通知②
+      │
+      └─ 結束：hotfix 單「結案」／「取消申請」→ 停止追蹤
+         停損：hotfix 日 +1 仍未完成 → PROD 已收齊但未轉緊急簽核發 TPM 個人通知 [AI 補充]；未收齊發停損告警；終止
 ```
 
 ### 程式／設定異動流程（需要改 code 或 config 時才用）
@@ -134,9 +160,12 @@ Claude 開分支 → push 異動 → 開 PR → TPM review → Approve → Merge
 YYYY/MM/DD {產品名}              # 雲端（AWS）產品
 YYYY/MM/DD {產品名} k8s          # 地端（K8s）產品，會一併建立主站 K8s 上線子單
 YYYY/MM/DD {產品名} k8s dr       # 地端＋DR 站：主站與 DR 站子單一起建（每 repo 各一張）
+{YYYYMMDD} {產品名} hotfix       # hotfix（如「20261021 農場 hotfix」；僅雲端產品）
 ```
 
 Claude 會自動依序執行以下步驟。
+
+> hotfix 指令：Claude 建 hotfix 單（標題 `{顯示名稱} - hotfix {M/D}`、送Q 11:00、上線 12:00）與 Epic（`[hotfix] {YYYYMMDD} 上線`），完成連結與描述欄表格後開 PR；同產品同日已有 hotfix 條目時會停止並回報 [AI 補充]。「緊急上線」轉換（→ 緊急簽核）請於 PROD PR 備妥後手動觸發，並於轉換畫面填處級主管與緊急上線原因。
 
 > 若指令的雲端／地端型態與該產品設定（`hosting`）不符，Claude 會提醒你改用正確指令，不會建立任何單。
 
@@ -160,7 +189,7 @@ Claude 會自動依序執行以下步驟。
 | 時機 | 動作 |
 |------|------|
 | 立即 | Teams 上線頻道通知（通知①） |
-| 每 30 分（窗口制） | 上線日 −3 工作天起搜 STG、−1 工作天起搜 PROD → 更新 Jira → 轉狀態 → 轉「簽核中」成功發簽核通知（通知②） |
+| 每 10 分（窗口制） | 上線日 −3 工作天起搜 STG、−1 工作天起搜 PROD → 更新 Jira → 轉狀態 → 轉「簽核中」成功發簽核通知（通知②） |
 
 ### 3.3 你需要做的：PR 簽核
 
@@ -170,7 +199,7 @@ Claude 完成後會給你 PR 連結，執行以下步驟：
 2. 點「**Files changed**」確認 state.json 內容
 3. 點「**Review changes**」→「**Approve**」→「**Submit review**」
 4. 點「**Merge pull request**」→「**Confirm merge**」
-   > **不需重發通知①時**（如切換追蹤日期，先前已通知過）：點「Merge pull request」後，在 commit 訊息（標題或 Extended description 皆可）加入 `[skip ci]` 再 Confirm merge，通知① workflow 即不會執行（GitHub Actions 內建規則）；每 30 分的 PR 搜集排程不受影響。
+   > **不需重發通知①時**（如切換追蹤日期，先前已通知過）：點「Merge pull request」後，在 commit 訊息（標題或 Extended description 皆可）加入 `[skip ci]` 再 Confirm merge，通知① workflow 即不會執行（GitHub Actions 內建規則）；每 10 分的 PR 搜集排程不受影響。hotfix 的 PR merge 時不加 `[skip ci]`。
 5. 本地同步：
 
 ```bash
@@ -193,6 +222,13 @@ Merge 完成後，GitHub Actions 自動觸發 Teams 上線頻道通知。
 | 2 | PROD PR 簽核通知 | 有 STG PR 的 repo 之 PROD PR 全找齊、上線單轉「簽核中」成功 | 簽核人（`approvers`，簽核人名單） | 產品頻道 |
 | 3 | 人工轉單提醒 | PROD PR 全找到但自動轉「簽核中」失敗（僅首次失敗發送；重試至停損日仍失敗會再發一次並終止） | TPM 個人聊天 | TPM 個人聊天（Power Automate） |
 | 4 | 安全停損告警 | 超過上線日 +1 日曆天（`today > 上線日+1`，即上線日 +2 起）仍未蒐齊 PROD PR | TPM 個人聊天 | TPM 個人聊天（Power Automate） |
+
+**hotfix 版通知**（對象與頻道同上表；文案見 4.2、4.3）：
+
+- 通知①：hotfix PR merge 至 main 立即發送
+- 通知②：hotfix 單已達「緊急簽核」（或之後）且有 STG PR 的 repo 全找齊 PROD PR
+- TPM 個人通知：已轉「緊急簽核」但 PROD 未收齊（僅一次）；或 hotfix 日 +1 時 PROD 已收齊但未轉緊急簽核 [AI 補充]
+- 停損告警：hotfix 日 +1 仍未蒐齊 PROD PR
 
 ### 4.2 notify-deploy.yml（上線準備通知）
 
@@ -239,14 +275,29 @@ Merge 完成後，GitHub Actions 自動觸發 Teams 上線頻道通知。
 @{工程師A} @{工程師B} @{工程師C}
 ```
 
+**hotfix 版通知①**（hotfix 條目 merge 至 main 即發送；@mention 對象同上；手動補發時產品名稱填 hotfix 條目 key，如「農場 hotfix 20261021」）：
+
+```
+{hotfix 日YYYYMMDD} {顯示名稱} hotfix 單          ← 標題（粗體）
+
+hotfix 單：{Jira 連結}
+
+以下內容請於討論串留言
+1. STG PR 簽核
+2. PROD PR
+3. Develop PR
+
+{@工程師們}
+```
+
 ### 4.3 pr-collector.yml（PR 搜集、狀態轉換、簽核通知、人工提醒）
 
-- **觸發條件：** 每 30 分鐘自動執行（UTC）；窗口外由腳本即刻結束
-- **PR 搜集方式：** 以 PR **title** 為準——用「上線日期 token（`YYYYMMDD` 與 `YYMMDD`）」比對 title、再以 title 的 `stg`/`prod`（不分大小寫）分類，STG 只取**已 merged** 的 PR、PROD 取 **open** 的 PR（簽核在 merge 之前）。不依賴 head/base 分支名稱（各 repo 命名不一致）。工作日回推只跳週末（國定假日視為工作日）。
-- **STG（上線日 −3 工作天起）：** 搜集各 repo 中 title 含上線日期 + `stg`/`[stg]` 且已 merged 的 PR，寫入 Jira Web/API 程式資訊欄位；**找到 STG PR 後即嘗試將上線單推進到「STAGING測試中」狀態，若當次未轉成功，之後每 30 分排程會持續重試直到成功**，**不發 Teams 通知**
+- **觸發條件：** 每 10 分鐘自動執行（UTC）；窗口外由腳本即刻結束
+- **PR 搜集方式：** 以 PR **title** 為準——用「上線日期 token（`YYYYMMDD` 與 `YYMMDD`）」比對 title、再以 title 的 `stg`/`prod`（不分大小寫）分類，STG 只取**已 merged** 的 PR、PROD 取 **open** 的 PR（簽核在 merge 之前）；維運搜集排除 title 含 `hotfix`（不分大小寫）的 PR。不依賴 head/base 分支名稱（各 repo 命名不一致）。工作日回推只跳週末（國定假日視為工作日）。
+- **STG（上線日 −3 工作天起）：** 搜集各 repo 中 title 含上線日期 + `stg`/`[stg]` 且已 merged 的 PR，寫入 Jira Web/API 程式資訊欄位；**找到 STG PR 後即嘗試將上線單推進到「STAGING測試中」狀態，若當次未轉成功，之後每 10 分排程會持續重試直到成功**，**不發 Teams 通知**
 - **PROD（上線日 −1 工作天起）：** 搜集 `prod`/`[prod]` PR（同樣 title 比對，取 **open**），**有 STG PR 的 repo** 全找齊對應 PROD PR 後嘗試轉「簽核中」（無 STG PR 的 repo 不列入、不等待；轉單自動帶簽核主管）：
   - **成功** → 發 PROD PR 簽核通知至產品頻道（通知②，@mention 簽核人），終止
-  - **失敗** → 發人工轉單提醒至 TPM 個人聊天（**僅首次失敗發送**），保持追蹤、之後每 30 分自動重試（如 QA 尚未把單轉到「Staging測試完成」的時序問題會自癒）；**超過上線日 +1 日曆天仍失敗**才再發一次提醒並終止
+  - **失敗** → 發人工轉單提醒至 TPM 個人聊天（**僅首次失敗發送**），保持追蹤、之後每 10 分自動重試（如 QA 尚未把單轉到「Staging測試完成」的時序問題會自癒）；**超過上線日 +1 日曆天仍失敗**才再發一次提醒並終止
 - **安全停損：** PROD 一直沒找齊，且 `today > 上線日 +1 日曆天`（即上線日 +2 起）→ 發告警至 TPM 個人聊天，終止
 - 終止收尾（轉單成功 `signed`／重試至停損日仍失敗 `manual`／安全停損 `timeout`）皆設 `status=completed`，之後排程跳過；STG 也隨之停止。轉「簽核中」失敗**當下不會**設 completed，會持續重試
 
@@ -309,6 +360,43 @@ Merge 完成後，GitHub Actions 自動觸發 Teams 上線頻道通知。
    - Frontend：https://github.com/{org}/{repo-name}/pull/{N}
 ```
 
+**hotfix 條目（`type=hotfix`）的處理**（同一支 `collect_prs.py`，獨立流程）：
+
+- **搜集：** 條目進 main 後每輪搜集、不套窗口；title 須含上線日期 token ＋ `stg`/`prod` ＋ `hotfix`（不分大小寫）。STG 取**已 merged**，PROD 取 **open 或已 merged**（每 repo 取第一筆）；有新 PR 即更新 Web/API 程式資訊欄位。程式**不轉任何狀態**
+- **緊急簽核：** hotfix 單狀態為「緊急簽核」或之後（線上作業中、Production測試中、Production測試完成）即視為已轉 [AI 補充]
+  - 有 STG PR 的 repo 全找齊 PROD PR → 發 hotfix 版通知②，終止（`signed`）
+  - 未收齊 → 發 TPM 個人通知（僅一次），持續搜集；收齊後補發通知②
+- **結束：** hotfix 單「結案」／「取消申請」→ 停止追蹤
+- **停損：** `today > hotfix 日 +1 日曆天` → PROD 已收齊但未轉緊急簽核發 TPM 個人通知 [AI 補充]；未收齊發停損告警；皆終止（`timeout`）
+
+hotfix 版通知②：
+
+```
+🚀 PROD PR 簽核通知｜{顯示名稱} {hotfix 日YYYYMMDD} hotfix
+
+{@簽核人們} Hi all，{顯示名稱}本次 hotfix 所有 PROD PR 已就緒，請抽空簽核 hotfix 單與 PR，感謝
+
+- hotfix 單：{Jira 連結}
+- PR：
+   - {repo 短標籤}：{PROD PR 連結}
+```
+
+hotfix 版 TPM 個人通知：
+
+```
+⚠️ {產品名}：需人工轉單
+{hotfix 單號} 無法自動轉為「緊急簽核」，請手動操作。
+hotfix 單：{Jira 連結}
+```
+
+hotfix 版停損告警：
+
+```
+⚠️ {產品名}：hotfix 日 +1 仍未蒐齊 PROD PR，已停止自動搜集。
+請人工確認 {hotfix 單號}，並視情況手動轉「緊急簽核」。
+hotfix 單：{Jira 連結}
+```
+
 ### 4.4 多張上線單管理規則
 
 `state.json` 以產品名為 key 管理各產品的上線追蹤。若同一產品同時有兩張（或多張）上線單，系統使用 **`pending_queue`** 暫存後續待啟用的條目：
@@ -316,6 +404,7 @@ Merge 完成後，GitHub Actions 自動觸發 Teams 上線頻道通知。
 1. **Claude 在 Step 5 自動判斷**：若該產品已有 active 條目，不覆蓋，改在現有條目的 `pending_queue` 陣列新增一筆（含 `deploy_date`、`stg_date`、`deploy_issue_key`、`deploy_issue_url`、`epic_key`）
 2. **通知①同步發送**：PR merge 後，`notify_deploy.py` 會同時替 `pending_queue` 新增的條目發送上線準備通知（不只發 active 條目）
 3. **自動啟用**：待前張單轉「簽核中」成功，`collect_prs.py` 自動將 `pending_queue` 第一筆提升為 active，**無需人工操作**
+4. **hotfix 不佔用 pending_queue**：hotfix 條目使用獨立 key（`{產品名} hotfix {YYYYMMDD}`），不進入、也不影響該產品維運條目的 active／`pending_queue`；同產品同一天可同時有維運與 hotfix，兩者以 PR title 是否含 `hotfix` 區分、互不干擾
 
 ---
 
@@ -566,7 +655,7 @@ Skill 觸發後需要知道你的 GitHub repo 位置（`{owner}/{repo}`）——
 
 - [ ] `repo_display_names`：每個 repo 的短標籤，顯示於 Jira 欄位與 Teams 通知
 - [ ] **GH_PAT 權限**：現有 `GH_PAT` secret 必須能讀取新產品的**所有 repo**（尤其跨 org 或私有 repo），否則 PR 搜集抓不到任何 PR
-- [ ] **跨團隊協議**：PR 搜集**不依賴分支命名**，改看 PR title——新產品工程師的 STG/PROD PR **title 必須含上線日期（YYYYMMDD 或 YYMMDD）與 `stg`/`[stg]` 或 `prod`/`[prod]`（不分大小寫）**；STG PR 須**已 merged**，PROD PR 為 **open**（簽核在 merge 之前）
+- [ ] **跨團隊協議**：PR 搜集**不依賴分支命名**，改看 PR title——新產品工程師的 STG/PROD PR **title 必須含上線日期（YYYYMMDD 或 YYMMDD）與 `stg`/`[stg]` 或 `prod`/`[prod]`（不分大小寫）**；STG PR 須**已 merged**，PROD PR 為 **open**（簽核在 merge 之前）；**hotfix PR title 另須含 `hotfix`（不分大小寫）**，hotfix PROD PR 為 open 或已 merged；維運 PR title 不得含 `hotfix`
 
 **C. 可沿用 / 共用的項目（新增產品時通常不用改）**
 
@@ -639,6 +728,7 @@ Skill 觸發後需要知道你的 GitHub repo 位置（`{owner}/{repo}`）——
 | 類型 | 格式 | 範例 |
 |------|------|------|
 | 上線部署 | `chore/activate-{產品}-{日期}` | `chore/activate-{產品}-20260716` |
+| hotfix | `chore/activate-{產品}-hotfix-{日期}` | `chore/activate-{產品}-hotfix-20261021` |
 | 設定更新 | `config/簡述` | `config/update-aad-ids` |
 | 修 bug | `fix/簡述` | `fix/notify-deploy-logic` |
 | 新功能 | `feat/簡述` | `feat/add-product-b` |
@@ -704,7 +794,7 @@ git push origin config/update-webhook-url
 ### Q：PROD PR 找齊了，但沒收到簽核通知（通知②）？
 
 1. 去 GitHub Actions → **PR Collector & Deploy Notifier** → 看最新 run 的「Run PR collector」log
-2. log 印「`❌ 轉單失敗: HTTP 400 …`」→ 依 Jira 錯誤訊息處理（如「請選擇簽核主管」＝ config 的 `jira_sign_manager_account_id` 未設定）；log 印「`⚠️ 找不到可轉到「簽核中」的 transition`」＝ 上線單還停在較早狀態（例如 QA 尚未轉「Staging測試完成」）。轉單失敗會發通知③到 TPM 個人聊天（僅首次），之後每 30 分自動重試；超過上線日 +1 日曆天仍失敗才終止
+2. log 印「`❌ 轉單失敗: HTTP 400 …`」→ 依 Jira 錯誤訊息處理（如「請選擇簽核主管」＝ config 的 `jira_sign_manager_account_id` 未設定）；log 印「`⚠️ 找不到可轉到「簽核中」的 transition`」＝ 上線單還停在較早狀態（例如 QA 尚未轉「Staging測試完成」）。轉單失敗會發通知③到 TPM 個人聊天（僅首次），之後每 10 分自動重試；超過上線日 +1 日曆天仍失敗才終止
 3. log 印「`❌ Teams signing notification failed`」→ 產品頻道 webhook 有問題；此情況下一輪排程會自動重試
 4. 確認 state.json 該產品 `status` 是否已是 `completed`（completed 後排程不再處理該產品）
 
@@ -723,6 +813,13 @@ cd ~/Documents/{repo-name} && git fetch origin && git reset --hard origin/main
 - 前張上線單轉「簽核中」成功後，系統自動啟用 `pending_queue` 的下一筆，無需手動操作
 - PR merge 後，通知①也會同時替 `pending_queue` 的條目發送
 - 手動補發（Run workflow）時，active 與所有 `pending_queue` 條目的通知都會一併發送
+
+### Q：hotfix 的 PROD PR 都到了，但沒收到通知②？
+
+1. 確認 hotfix 單是否已手動轉「緊急簽核」（程式不轉 hotfix 單狀態，未轉則不發通知②）
+2. 確認各 PR title 皆含上線日期、`stg`/`prod` 與 `hotfix`；有 STG PR 的 repo 需都有對應 PROD PR
+3. 已轉緊急簽核但 PROD 未收齊時，TPM 個人聊天會收到一次「需人工轉單」通知，收齊後自動補發通知②
+4. 需要補發時：GitHub Actions → Notify Signing Channel →「Run workflow」，`product_name` 填 hotfix 條目 key（如「農場 hotfix 20261021」）
 
 ### Q：PR 簽核後本地如何同步？
 

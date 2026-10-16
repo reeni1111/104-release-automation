@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       product_name:
-        description: '指定單一產品名稱（如「GO」），必填；本工具不支援一次發送全部'
+        description: '指定單一產品名稱（如「GO」）或 hotfix 條目 key（如「農場 hotfix 20261021」），必填；本工具不支援一次發送全部'
         required: true
       force:
         description: '覆蓋防呆：status=completed 或尚未收集到 PROD PR 時仍發送'

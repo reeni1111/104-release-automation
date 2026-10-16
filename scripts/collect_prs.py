@@ -2,12 +2,12 @@
 """
 104 Deploy Automation - PR Collector & Notifier (v4)
 
-排程：GitHub Actions 每 30 分鐘觸發（窗口制，窗口外即刻結束）。
+排程：GitHub Actions 每 10 分鐘觸發（窗口制，窗口外即刻結束）。
 
-STG（上線日 −3 工作天起，每 30 分）：
+STG（上線日 −3 工作天起，每 10 分）：
     搜集 STG PR（title 含 stg/[stg]、含上線日 token、已 merged）
     首次找到 STG PR → 轉主單狀態為「已更新Staging」
-PROD（上線日 −1 工作天起，每 30 分）：
+PROD（上線日 −1 工作天起，每 10 分）：
     搜集 PROD PR（title 含 prod/[prod]、含上線日 token、open 待簽核；簽核在 merge 前）
     有 STG PR 的 repo 全找齊對應 PROD PR → 轉主單「簽核中」
     （不是每次上線每個 repo 都在修正範圍；無 STG PR 的 repo 不等其 PROD PR）
@@ -21,6 +21,14 @@ PROD（上線日 −1 工作天起，每 30 分）：
 
 PR 搜集以「上線日 token（YYYYMMDD/YYMMDD）」比對 title + stg/prod + 已 merged，
 不依賴 head/base 分支名。支援多產品：設定讀自 config.json，狀態存於 state.json。
+維運搜集排除 title 含 hotfix 的 PR。
+
+Hotfix（state.json 條目 type=hotfix，key「{產品名} hotfix {YYYYMMDD}」，以 product 對應 config）：
+    不套窗口，條目進 main 後每輪搜集；title 須含上線日 token + stg/prod + hotfix（不分大小寫）
+    STG 取已 merged；PROD 取 open 或已 merged；寫入 Web/API 程式資訊，不轉任何狀態
+    上線單到「緊急簽核」或之後 → PROD 收齊發通知②（signed）；未收齊發 TPM 個人通知（僅一次）、續搜、收齊補發②
+    上線單「結案」／「取消申請」→ 結束追蹤
+    停損（today > hotfix 日 +1）：PROD 已收齊但未轉緊急簽核 → TPM 個人通知；未收齊 → 停損告警（皆 timeout）
 """
 
 import base64
@@ -75,8 +83,9 @@ def subtract_working_days(d: date, n: int) -> date:
 
 
 # ── GitHub: PR 搜集 (title 日期 token + stg/prod + merged) ──────────────────────
-STG_PATTERN  = r"(?i)(\bstg\b|\[stg\])"
-PROD_PATTERN = r"(?i)(\bprod\b|\[prod\])"
+STG_PATTERN    = r"(?i)(\bstg\b|\[stg\])"
+PROD_PATTERN   = r"(?i)(\bprod\b|\[prod\])"
+HOTFIX_PATTERN = r"(?i)hotfix"
 
 
 def deploy_date_tokens(deploy_date_str: str) -> list:
@@ -134,9 +143,32 @@ def search_merged_prs_by_title(repo: str, tokens: list, pr_state: str = "merged"
     return [{"title": t, "html_url": u} for u, t in found.items()]
 
 
+def search_hotfix_prs(repo: str, tokens: list) -> list:
+    """hotfix 用：每個上線日 token 一次「不限狀態」查詢（跨 token 去重），由程式自行區分 open／merged。
+    回傳 [{"title", "html_url", "state", "merged"}]。"""
+    found = {}
+    for token in tokens:
+        q = f"repo:{repo} is:pr in:title {token}"
+        for item in _gh_search_with_retry(q):
+            found[item["html_url"]] = {
+                "title":    item.get("title", ""),
+                "html_url": item["html_url"],
+                "state":    item.get("state", ""),
+                "merged":   bool((item.get("pull_request") or {}).get("merged_at")),
+            }
+        time.sleep(2)  # GitHub Search API 節流
+    return list(found.values())
+
+
 def filter_by_title(prs: list, pattern: str) -> list:
     regex = re.compile(pattern, re.IGNORECASE)
     return [pr for pr in prs if regex.search(pr.get("title", ""))]
+
+
+def exclude_hotfix(prs: list) -> list:
+    """維運搜集用：排除 title 含 hotfix 的 PR（hotfix PR 由 hotfix 條目搜集）。"""
+    regex = re.compile(HOTFIX_PATTERN)
+    return [pr for pr in prs if not regex.search(pr.get("title", ""))]
 
 
 # ── Jira: 依「目的地狀態」轉單（共用邏輯）───────────────────────────────────────
@@ -155,6 +187,10 @@ STG_REACHED_OR_PASSED = {
     "STAGING測試中", "Staging測試完成", "簽核中",
     "Production測試中", "Production測試完成", "線上作業中", "結案",
 }
+
+# hotfix：上線單由 TPM 手動轉「緊急簽核」；程式只讀狀態、不轉單
+HOTFIX_EMERGENCY_REACHED = {"緊急簽核", "線上作業中", "Production測試中", "Production測試完成"}
+HOTFIX_CLOSED            = {"結案", "取消申請"}
 
 
 def get_issue_status(issue_key: str) -> str:
@@ -304,13 +340,22 @@ def send_signing_notification(product_name: str, deployment: dict, product_confi
     ]
     mention_str = " ".join(f"<at>{a['name']}</at>" for a in approvers if a.get("aad_id"))
 
-    body = (
-        f"{mention_str} Hi all，{display_name}本次上線所有 PROD PR 已就緒，"
-        f"請抽空簽核上線單與 PR，感謝\n\n"
-        f"- 上線單：{jira_url}\n- PR：\n" + "\n".join(pr_lines)
-    )
+    if deployment.get("type") == "hotfix":
+        title = f"🚀 PROD PR 簽核通知｜{display_name} {deploy_date} hotfix"
+        body = (
+            f"{mention_str} Hi all，{display_name}本次 hotfix 所有 PROD PR 已就緒，"
+            f"請抽空簽核 hotfix 單與 PR，感謝\n\n"
+            f"- hotfix 單：{jira_url}\n- PR：\n" + "\n".join(pr_lines)
+        )
+    else:
+        title = f"🚀 PROD PR 簽核通知｜{display_name} {deploy_date}"
+        body = (
+            f"{mention_str} Hi all，{display_name}本次上線所有 PROD PR 已就緒，"
+            f"請抽空簽核上線單與 PR，感謝\n\n"
+            f"- 上線單：{jira_url}\n- PR：\n" + "\n".join(pr_lines)
+        )
 
-    ok = _post_card(webhook_url, f"🚀 PROD PR 簽核通知｜{display_name} {deploy_date}", body, entities)
+    ok = _post_card(webhook_url, title, body, entities)
     if ok:
         print(f"  ✅ Signing notification sent for {product_name}")
     else:
@@ -327,11 +372,18 @@ def notify_manual_transition_needed(product_name: str, deployment: dict):
         return
     issue_key = deployment["deploy_issue_key"]
     jira_url  = deployment["deploy_issue_url"]
-    message = (
-        f"⚠️ {product_name}：需人工轉單\n"
-        f"{issue_key} 無法自動轉為「簽核中」，請手動操作。\n"
-        f"上線單：{jira_url}"
-    )
+    if deployment.get("type") == "hotfix":
+        message = (
+            f"⚠️ {deployment.get('product', product_name)}：需人工轉單\n"
+            f"{issue_key} 無法自動轉為「緊急簽核」，請手動操作。\n"
+            f"hotfix 單：{jira_url}"
+        )
+    else:
+        message = (
+            f"⚠️ {product_name}：需人工轉單\n"
+            f"{issue_key} 無法自動轉為「簽核中」，請手動操作。\n"
+            f"上線單：{jira_url}"
+        )
     resp = requests.post(webhook_url, json={"message": message})
     if resp.status_code in (200, 202):
         print(f"  ✅ 人工轉單提醒已發送")
@@ -347,11 +399,18 @@ def notify_prod_timeout(product_name: str, deployment: dict):
         return
     issue_key = deployment["deploy_issue_key"]
     jira_url  = deployment["deploy_issue_url"]
-    message = (
-        f"⚠️ {product_name}：上線日 +1 仍未蒐齊 PROD PR，已停止自動搜集。\n"
-        f"請人工確認 {issue_key}，並視情況手動轉「簽核中」。\n"
-        f"上線單：{jira_url}"
-    )
+    if deployment.get("type") == "hotfix":
+        message = (
+            f"⚠️ {deployment.get('product', product_name)}：hotfix 日 +1 仍未蒐齊 PROD PR，已停止自動搜集。\n"
+            f"請人工確認 {issue_key}，並視情況手動轉「緊急簽核」。\n"
+            f"hotfix 單：{jira_url}"
+        )
+    else:
+        message = (
+            f"⚠️ {product_name}：上線日 +1 仍未蒐齊 PROD PR，已停止自動搜集。\n"
+            f"請人工確認 {issue_key}，並視情況手動轉「簽核中」。\n"
+            f"上線單：{jira_url}"
+        )
     resp = requests.post(webhook_url, json={"message": message})
     if resp.status_code in (200, 202):
         print(f"  ✅ 安全停損告警已發送")
@@ -423,6 +482,105 @@ def _normalize_priority(deployment: dict, repos: list) -> bool:
     return True
 
 
+# ── Hotfix ─────────────────────────────────────────────────────────────────────
+def process_hotfix(name: str, deployment: dict, product_config: dict, today: date) -> bool:
+    """處理一筆 hotfix 條目（type=hotfix）；回傳 state 是否有變動。
+    與維運條目完全獨立：不套窗口、不轉單、不使用 pending_queue。"""
+    changed    = False
+    repos      = product_config["repos"]
+    repo_names = product_config["repo_display_names"]
+    field_id   = product_config["jira_web_api_field"]
+    if "stg_prs" not in deployment:
+        deployment["stg_prs"] = {repo: [] for repo in repos}
+        changed = True
+    if "prod_prs" not in deployment:
+        deployment["prod_prs"] = {repo: None for repo in repos}
+        changed = True
+
+    deploy_date_str = deployment["deploy_date"]
+    deploy_date     = datetime.strptime(deploy_date_str, "%Y%m%d").date()
+    tokens          = deploy_date_tokens(deploy_date_str)
+    issue_key       = deployment["deploy_issue_key"]
+    cutoff          = deploy_date + timedelta(days=1)   # 停損：hotfix 日 +1 日曆天
+
+    print(f"\n{'='*55}")
+    print(f"🔥 {name} | hotfix={deploy_date_str} | today={today} | {issue_key}")
+    print(f"   停損={cutoff} | tokens={tokens}")
+
+    status = get_issue_status(issue_key)
+    print(f"   Jira 狀態：{status or '（取得失敗）'}")
+    if status in HOTFIX_CLOSED:
+        print(f"  ⏭️  上線單已「{status}」→ 結束追蹤")
+        deployment["status"] = "completed"
+        return True
+
+    # ── 搜集（STG：已 merged；PROD：open 或已 merged；title 皆須含 hotfix）──
+    print("🔍 hotfix: collecting...")
+    any_new = False
+    for repo in repos:
+        display = repo_names.get(repo, repo.split("/")[-1])
+        prs     = filter_by_title(search_hotfix_prs(repo, tokens), HOTFIX_PATTERN)
+
+        existing = list(deployment["stg_prs"].get(repo, []))
+        stg_new  = [pr["html_url"] for pr in filter_by_title(prs, STG_PATTERN)
+                    if pr["merged"] and pr["html_url"] not in existing]
+        if stg_new:
+            deployment["stg_prs"][repo] = existing + stg_new
+            any_new = True
+            for u in stg_new:
+                print(f"  ✅ STG {display}: {u}")
+
+        if not deployment["prod_prs"].get(repo):
+            prod = [pr for pr in filter_by_title(prs, PROD_PATTERN)
+                    if pr["state"] == "open" or pr["merged"]]
+            if prod:
+                deployment["prod_prs"][repo] = prod[0]["html_url"]
+                any_new = True
+                print(f"  ✅ PROD {display}: {prod[0]['html_url']}")
+
+    if any_new:
+        changed = True
+        adf = build_web_api_adf(deployment["stg_prs"], deployment["prod_prs"], repo_names)
+        update_web_api_field(issue_key, field_id, adf)
+
+    # 收齊範圍 = 有 STG PR 的 repo（判斷標準與維運相同）
+    scoped_repos = [r for r in repos if deployment["stg_prs"].get(r)]
+    all_found    = bool(scoped_repos) and all(deployment["prod_prs"].get(r) for r in scoped_repos)
+
+    # ── 緊急簽核判斷（狀態已到「緊急簽核」或之後即視為已轉，避免排程錯過短暫停留）──
+    if status in HOTFIX_EMERGENCY_REACHED:
+        if not deployment.get("emergency_reached"):
+            deployment["emergency_reached"] = True
+            changed = True
+        if all_found:
+            print("  🎉 已轉緊急簽核且 PROD 收齊 → 通知②")
+            if send_signing_notification(name, deployment, product_config):
+                deployment["signing_notified"] = True
+                deployment["status"] = "completed"
+                deployment["stopped_reason"] = "signed"
+                changed = True
+            return changed
+        if not deployment.get("emergency_notice_sent"):
+            print("  ⚠️  已轉緊急簽核但 PROD 未收齊 → TPM 個人通知（僅一次），持續搜集")
+            notify_manual_transition_needed(name, deployment)
+            deployment["emergency_notice_sent"] = True
+            changed = True
+
+    # ── 停損 ──
+    if today > cutoff:
+        if all_found and not deployment.get("emergency_reached"):
+            print("  ⏰ hotfix 日 +1：PROD 已收齊但未轉緊急簽核 → TPM 個人通知，終止")
+            notify_manual_transition_needed(name, deployment)
+        else:
+            print("  ⏰ hotfix 日 +1 仍未蒐齊 PROD → 停損告警，終止")
+            notify_prod_timeout(name, deployment)
+        deployment["status"] = "completed"
+        deployment["stopped_reason"] = "timeout"
+        changed = True
+
+    return changed
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
     today = date.today()
@@ -438,9 +596,15 @@ def main():
             print(f"⏭️  {product_name}: completed, skipping")
             continue
 
-        product_config = CONFIG.get("products", {}).get(product_name)
+        product_config = CONFIG.get("products", {}).get(deployment.get("product", product_name))
         if not product_config:
             print(f"⚠️  '{product_name}' not in config.json")
+            continue
+
+        # hotfix 條目：獨立流程（不套窗口、不轉單、不使用 pending_queue）
+        if deployment.get("type") == "hotfix":
+            if process_hotfix(product_name, deployment, product_config, today):
+                state_changed = True
             continue
 
         deploy_date_str = deployment["deploy_date"]
@@ -491,7 +655,7 @@ def main():
             display  = repo_names.get(repo, repo.split("/")[-1])
             existing = set(deployment["stg_prs"].get(repo, []))
             prs      = search_merged_prs_by_title(repo, tokens)
-            stg      = filter_by_title(prs, STG_PATTERN)
+            stg      = exclude_hotfix(filter_by_title(prs, STG_PATTERN))
             new_urls = [pr["html_url"] for pr in stg if pr["html_url"] not in existing]
             if new_urls:
                 deployment["stg_prs"][repo] = list(existing) + new_urls
@@ -532,7 +696,7 @@ def main():
                     print(f"  ✅ PROD {display}: already collected")
                     continue
                 prs  = search_merged_prs_by_title(repo, tokens, "open")  # PROD 抓 open：簽核在 merge 之前
-                prod = filter_by_title(prs, PROD_PATTERN)
+                prod = exclude_hotfix(filter_by_title(prs, PROD_PATTERN))
                 if prod:
                     deployment["prod_prs"][repo] = prod[0]["html_url"]
                     any_new = True
@@ -568,7 +732,7 @@ def main():
                             state_changed = True
                 else:
                     # 轉單失敗：通知③僅首次發送（manual_notice_sent 防重複），
-                    # 保持 active 由排程每 30 分重試（如 QA 尚未轉「Staging測試完成」的時序問題可自癒）；
+                    # 保持 active 由排程每 10 分重試（如 QA 尚未轉「Staging測試完成」的時序問題可自癒）；
                     # 超過停損日（上線日 +1）仍失敗 → 再提醒一次並終止
                     if today > prod_cutoff:
                         print("  ⏰ 轉「簽核中」重試至停損日仍失敗 → 個人頻道提醒，終止")
