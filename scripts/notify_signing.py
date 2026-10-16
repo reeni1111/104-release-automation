@@ -5,6 +5,7 @@ notify_signing.py
 手動補發「PROD PR 簽核通知」（通知②）到產品頻道並 @mention 簽核人。
 設計：
 - 強制指定單一產品（環境變數 NOTIFY_PRODUCT）；不支援一次發送全部。
+  hotfix 條目以其 key 指定（如「農場 hotfix 20261021」），以 product 對應 config，發 hotfix 版文案。
 - 防呆（可用 FORCE=true 覆蓋）：
   * 未指定產品            → 直接失敗
   * 產品不在 state.json   → 直接失敗
@@ -66,7 +67,7 @@ def main():
         print(f"       目前有：{list(active.keys())}", file=sys.stderr)
         sys.exit(1)
 
-    product_config = config.get("products", {}).get(product_name)
+    product_config = config.get("products", {}).get(active[product_name].get("product", product_name))
     if not product_config:
         print(f"ERROR: '{product_name}' 不在 config.json 的 products。", file=sys.stderr)
         sys.exit(1)
@@ -110,12 +111,20 @@ def main():
     ]
     mention_str = " ".join(f"<at>{a['name']}</at>" for a in approvers if a.get("aad_id"))
 
-    body = (
-        f"{mention_str} Hi all，{display_name}本次上線所有 PROD PR 已就緒，"
-        f"請抽空簽核上線單與 PR，感謝\n\n"
-        f"- 上線單：{jira_url}\n- PR：\n" + "\n".join(pr_lines)
-    )
-    title = f"🚀 PROD PR 簽核通知｜{display_name} {deploy_date}"
+    if deployment.get("type") == "hotfix":
+        body = (
+            f"{mention_str} Hi all，{display_name}本次 hotfix 所有 PROD PR 已就緒，"
+            f"請抽空簽核 hotfix 單與 PR，感謝\n\n"
+            f"- hotfix 單：{jira_url}\n- PR：\n" + "\n".join(pr_lines)
+        )
+        title = f"🚀 PROD PR 簽核通知｜{display_name} {deploy_date} hotfix"
+    else:
+        body = (
+            f"{mention_str} Hi all，{display_name}本次上線所有 PROD PR 已就緒，"
+            f"請抽空簽核上線單與 PR，感謝\n\n"
+            f"- 上線單：{jira_url}\n- PR：\n" + "\n".join(pr_lines)
+        )
+        title = f"🚀 PROD PR 簽核通知｜{display_name} {deploy_date}"
 
     try:
         status = post_card(webhook_url, title, body, entities)

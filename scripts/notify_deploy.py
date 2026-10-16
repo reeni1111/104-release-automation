@@ -5,6 +5,7 @@ notify_deploy.py
 偵測 state.json 新增的部署，發送 Teams 上線作業頻道通知。
 - push 觸發：deploy_date 有變動的產品才發送
 - workflow_dispatch 觸發：發送 NOTIFY_PRODUCT 指定的產品，若未指定則發送所有 active 產品
+- hotfix 條目（type=hotfix，key「{產品名} hotfix {YYYYMMDD}」）：以 product 對應 config，發 hotfix 版通知①
 """
 
 import json
@@ -46,7 +47,7 @@ def build_payload(product_name, deployment, product_config):
     stg_M_D      = f"{int(stg_date[4:6])}/{int(stg_date[6:8])}"
     jira_url     = deployment['deploy_issue_url']
     display_name = product_config['display_name']
-    deploy_time  = product_config.get('deploy_time', '12:00')
+    deploy_time  = deployment.get('deploy_time') or product_config.get('deploy_time', '12:00')
 
     members = product_config.get('talent_engineering_members', [])
     valid_members = [m for m in members if m.get('aad_id', 'FILL_IN') != 'FILL_IN']
@@ -63,6 +64,60 @@ def build_payload(product_name, deployment, product_config):
     if not mention_str:
         mention_str = "(成員 AAD ID 尚未設定)"
 
+    blocks = {
+        "title": {
+            "type": "TextBlock",
+            "text": f"{deploy_date} {display_name} 上線單",
+            "weight": "Bolder",
+            "size": "Medium"
+        },
+        "schedule": {
+            "type": "TextBlock",
+            "text": (
+                f"預計 {stg_M_D} 上STG，{deploy_M_D} {deploy_time} 上線\n"
+                f"• 上線單：{jira_url}"
+            ),
+            "wrap": True
+        },
+        "checklist": {
+            "type": "TextBlock",
+            "text": (
+                "以下內容請於討論串留言\n"
+                "1. STG PR 簽核\n"
+                "2. PROD PR\n"
+                "3. Develop PR\n"
+                "4. APIM 會簽\n"
+                "5. SRE 開單申請\n"
+                "6. Rundown"
+            ),
+            "wrap": True
+        },
+        "mentions": {
+            "type": "TextBlock",
+            "text": mention_str,
+            "wrap": True
+        }
+    }
+
+    # hotfix 版通知①：同一組區塊 key（notify_deploy_card_blocks 照常適用），文案改為 hotfix 版
+    if deployment.get('type') == 'hotfix':
+        blocks['title']['text'] = f"{deploy_date} {display_name} hotfix 單"
+        blocks['schedule']['text'] = f"hotfix 單：{jira_url}"
+        blocks['checklist']['text'] = (
+            "以下內容請於討論串留言\n"
+            "1. STG PR 簽核\n"
+            "2. PROD PR\n"
+            "3. Develop PR"
+        )
+
+    selected = product_config.get('notify_deploy_card_blocks')
+    if selected:
+        body = [blocks[k] for k in selected if k in blocks]
+        if 'mentions' not in selected:
+            entities = []
+    else:
+        body = list(blocks.values())
+
     return {
         "type": "message",
         "attachments": [{
@@ -72,40 +127,7 @@ def build_payload(product_name, deployment, product_config):
                 "type": "AdaptiveCard",
                 "version": "1.2",
                 "msteams": {"entities": entities},
-                "body": [
-                    {
-                        "type": "TextBlock",
-                        "text": f"{deploy_date} {display_name} 上線單",
-                        "weight": "Bolder",
-                        "size": "Medium"
-                    },
-                    {
-                        "type": "TextBlock",
-                        "text": (
-                            f"預計 {stg_M_D} 上STG，{deploy_M_D} {deploy_time} 上線\n"
-                            f"• 上線單：{jira_url}"
-                        ),
-                        "wrap": True
-                    },
-                    {
-                        "type": "TextBlock",
-                        "text": (
-                            "以下內容請於討論串留言\n"
-                            "1. STG PR 簽核\n"
-                            "2. PROD PR\n"
-                            "3. Develop PR\n"
-                            "4. APIM 會簽\n"
-                            "5. SRE 開單申請\n"
-                            "6. Rundown"
-                        ),
-                        "wrap": True
-                    },
-                    {
-                        "type": "TextBlock",
-                        "text": mention_str,
-                        "wrap": True
-                    }
-                ]
+                "body": body
             }
         }]
     }
@@ -167,7 +189,7 @@ def main():
     errors = []
     for product_name, deployment in to_notify_pairs:
         print(f"[{product_name} {deployment['deploy_date']}] Sending notification...")
-        product_config = config['products'].get(product_name)
+        product_config = config['products'].get(deployment.get('product', product_name))
 
         if not product_config:
             print(f"  WARN: not found in config.json, skipping.")

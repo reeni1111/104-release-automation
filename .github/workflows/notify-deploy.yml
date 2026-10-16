@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       product_name:
-        description: '指定產品名稱（如「農場」），留空則發送所有 active 產品'
+        description: '指定產品名稱（如「農場」）或 hotfix 條目 key（如「農場 hotfix 20261021」），留空則發送所有 active 產品'
         required: false
         default: ''
 
