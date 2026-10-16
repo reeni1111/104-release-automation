@@ -132,12 +132,14 @@ TPM 輸入「{YYYYMMDD} {產品名} hotfix」
       ▼ 每 10 分鐘搜集（不套窗口）：title 含日期 + stg/prod + hotfix
   STG（已 merged）、PROD（open 或已 merged）→ 更新 Jira Web/API 程式資訊（程式不轉狀態）
       │
+      ├─ PROD 收齊、尚未轉緊急簽核 ──▶ 【TPM 個人通知（情境 1）】（僅一次），提醒手動轉「緊急簽核」
+      │
       ▼ TPM 手動觸發「緊急上線」→ 狀態「緊急簽核」
       ├─ PROD 已收齊 ──▶ 【通知②（hotfix 版）】Teams 產品頻道 @mention 簽核人，終止
-      └─ PROD 未收齊 ──▶ 【TPM 個人通知】（僅一次），持續搜集；收齊後補發通知②
+      └─ PROD 未收齊 ──▶ 持續搜集；收齊後發通知②
       │
       └─ 結束：hotfix 單「結案」／「取消申請」→ 停止追蹤
-         停損：hotfix 日 +1 仍未完成 → PROD 已收齊但未轉緊急簽核發 TPM 個人通知 [AI 補充]；未收齊發停損告警；終止
+         停損：hotfix 日 +1 仍未轉緊急簽核 → PROD 已收齊發【TPM 個人通知（情境 2）】；未收齊不通知；皆停止追蹤
 ```
 
 ### 程式／設定異動流程（需要改 code 或 config 時才用）
@@ -227,8 +229,7 @@ Merge 完成後，GitHub Actions 自動觸發 Teams 上線頻道通知。
 
 - 通知①：hotfix PR merge 至 main 立即發送
 - 通知②：hotfix 單已達「緊急簽核」（或之後）且有 STG PR 的 repo 全找齊 PROD PR
-- TPM 個人通知：已轉「緊急簽核」但 PROD 未收齊（僅一次）；或 hotfix 日 +1 時 PROD 已收齊但未轉緊急簽核 [AI 補充]
-- 停損告警：hotfix 日 +1 仍未蒐齊 PROD PR
+- TPM 個人通知（2 種情境，各發一次）：情境 1：PROD 已收齊、尚未轉「緊急簽核」；情境 2：hotfix 日 +1 時 PROD 已收齊但仍未轉「緊急簽核」（停止追蹤）
 
 ### 4.2 notify-deploy.yml（上線準備通知）
 
@@ -363,11 +364,12 @@ hotfix 單：{Jira 連結}
 **hotfix 條目（`type=hotfix`）的處理**（同一支 `collect_prs.py`，獨立流程）：
 
 - **搜集：** 條目進 main 後每輪搜集、不套窗口；title 須含上線日期 token ＋ `stg`/`prod` ＋ `hotfix`（不分大小寫）。STG 取**已 merged**，PROD 取 **open 或已 merged**（每 repo 取第一筆）；有新 PR 即更新 Web/API 程式資訊欄位。程式**不轉任何狀態**
+- **PROD 收齊、尚未轉緊急簽核：** 有 STG PR 的 repo 全找齊 PROD PR，且 hotfix 單尚未到「緊急簽核」→ 發 TPM 個人通知（情境 1，僅一次），提醒手動轉「緊急簽核」
 - **緊急簽核：** hotfix 單狀態為「緊急簽核」或之後（線上作業中、Production測試中、Production測試完成）即視為已轉 [AI 補充]
   - 有 STG PR 的 repo 全找齊 PROD PR → 發 hotfix 版通知②，終止（`signed`）
-  - 未收齊 → 發 TPM 個人通知（僅一次），持續搜集；收齊後補發通知②
+  - 未收齊 → 持續搜集；收齊後發通知②
 - **結束：** hotfix 單「結案」／「取消申請」→ 停止追蹤
-- **停損：** `today > hotfix 日 +1 日曆天` → PROD 已收齊但未轉緊急簽核發 TPM 個人通知 [AI 補充]；未收齊發停損告警；皆終止（`timeout`）
+- **停損：** `today > hotfix 日 +1 日曆天` → PROD 已收齊但未轉緊急簽核發 TPM 個人通知（情境 2）；未收齊不通知；皆停止追蹤（`timeout`）
 
 hotfix 版通知②：
 
@@ -381,19 +383,19 @@ hotfix 版通知②：
    - {repo 短標籤}：{PROD PR 連結}
 ```
 
-hotfix 版 TPM 個人通知：
+hotfix 版 TPM 個人通知（情境 1：PROD 收齊、尚未轉「緊急簽核」）：
 
 ```
-⚠️ {產品名}：需人工轉單
-{hotfix 單號} 無法自動轉為「緊急簽核」，請手動操作。
+⚠️ {產品名}：hotfix PROD PR 已收齊
+{hotfix 單號} 所有 PROD PR 已收齊，請手動轉「緊急簽核」，轉單後將自動發送通知②。
 hotfix 單：{Jira 連結}
 ```
 
-hotfix 版停損告警：
+hotfix 版 TPM 個人通知（情境 2：hotfix 日 +1 仍未轉「緊急簽核」，停止追蹤）：
 
 ```
-⚠️ {產品名}：hotfix 日 +1 仍未蒐齊 PROD PR，已停止自動搜集。
-請人工確認 {hotfix 單號}，並視情況手動轉「緊急簽核」。
+⚠️ {產品名}：hotfix 日 +1 仍未轉「緊急簽核」，已停止自動追蹤。
+{hotfix 單號} 所有 PROD PR 已收齊，轉「緊急簽核」後請手動補發通知②。
 hotfix 單：{Jira 連結}
 ```
 
@@ -818,8 +820,8 @@ cd ~/Documents/{repo-name} && git fetch origin && git reset --hard origin/main
 
 1. 確認 hotfix 單是否已手動轉「緊急簽核」（程式不轉 hotfix 單狀態，未轉則不發通知②）
 2. 確認各 PR title 皆含上線日期、`stg`/`prod` 與 `hotfix`；有 STG PR 的 repo 需都有對應 PROD PR
-3. 已轉緊急簽核但 PROD 未收齊時，TPM 個人聊天會收到一次「需人工轉單」通知，收齊後自動補發通知②
-4. 需要補發時：GitHub Actions → Notify Signing Channel →「Run workflow」，`product_name` 填 hotfix 條目 key（如「農場 hotfix 20261021」）
+3. PROD 收齊、尚未轉緊急簽核時，TPM 個人聊天會收到一次「hotfix PROD PR 已收齊」通知；手動轉「緊急簽核」後，下一輪即發通知②
+4. 需要補發時：GitHub Actions → Notify Signing Channel →「Run workflow」，`product_name` 填 hotfix 條目 key（如「農場 hotfix 20261021」）；hotfix 日 +1 已停止追蹤的條目，`force` 需設 `true`
 
 ### Q：PR 簽核後本地如何同步？
 

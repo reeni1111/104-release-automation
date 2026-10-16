@@ -26,9 +26,10 @@ PR 搜集以「上線日 token（YYYYMMDD/YYMMDD）」比對 title + stg/prod + 
 Hotfix（state.json 條目 type=hotfix，key「{產品名} hotfix {YYYYMMDD}」，以 product 對應 config）：
     不套窗口，條目進 main 後每輪搜集；title 須含上線日 token + stg/prod + hotfix（不分大小寫）
     STG 取已 merged；PROD 取 open 或已 merged；寫入 Web/API 程式資訊，不轉任何狀態
-    上線單到「緊急簽核」或之後 → PROD 收齊發通知②（signed）；未收齊發 TPM 個人通知（僅一次）、續搜、收齊補發②
+    PROD 收齊、上線單尚未到「緊急簽核」→ TPM 個人通知（僅一次），提醒手動轉「緊急簽核」
+    上線單到「緊急簽核」或之後且 PROD 收齊 → 發通知②（signed）
     上線單「結案」／「取消申請」→ 結束追蹤
-    停損（today > hotfix 日 +1）：PROD 已收齊但未轉緊急簽核 → TPM 個人通知；未收齊 → 停損告警（皆 timeout）
+    停損（today > hotfix 日 +1）：PROD 已收齊但未轉緊急簽核 → TPM 個人通知；未收齊 → 不通知；皆停止追蹤（timeout）
 """
 
 import base64
@@ -364,7 +365,7 @@ def send_signing_notification(product_name: str, deployment: dict, product_confi
 
 
 def notify_manual_transition_needed(product_name: str, deployment: dict):
-    """轉「簽核中」失敗，發純文字提醒至 TPM 個人聊天。
+    """轉「簽核中」失敗（hotfix：PROD 已收齊、尚未轉「緊急簽核」），發純文字提醒至 TPM 個人聊天。
     payload 格式：{"message": "..."}；Power Automate 運算式：triggerBody()?['message']"""
     webhook_url = CONFIG.get("tpm", {}).get("teams_personal_webhook_url", "")
     if not webhook_url or "FILL_IN" in webhook_url:
@@ -374,8 +375,8 @@ def notify_manual_transition_needed(product_name: str, deployment: dict):
     jira_url  = deployment["deploy_issue_url"]
     if deployment.get("type") == "hotfix":
         message = (
-            f"⚠️ {deployment.get('product', product_name)}：需人工轉單\n"
-            f"{issue_key} 無法自動轉為「緊急簽核」，請手動操作。\n"
+            f"⚠️ {deployment.get('product', product_name)}：hotfix PROD PR 已收齊\n"
+            f"{issue_key} 所有 PROD PR 已收齊，請手動轉「緊急簽核」，轉單後將自動發送通知②。\n"
             f"hotfix 單：{jira_url}"
         )
     else:
@@ -392,7 +393,7 @@ def notify_manual_transition_needed(product_name: str, deployment: dict):
 
 
 def notify_prod_timeout(product_name: str, deployment: dict):
-    """安全停損：上線日+1 仍未蒐齊 PROD → 發告警至 TPM 個人聊天（僅個人頻道）。"""
+    """安全停損：上線日+1 仍未蒐齊 PROD（hotfix：PROD 已收齊但仍未轉「緊急簽核」）→ 發告警至 TPM 個人聊天（僅個人頻道）。"""
     webhook_url = CONFIG.get("tpm", {}).get("teams_personal_webhook_url", "")
     if not webhook_url or "FILL_IN" in webhook_url:
         print(f"  ⚠️  teams_personal_webhook_url 未設定，跳過安全停損告警")
@@ -401,8 +402,8 @@ def notify_prod_timeout(product_name: str, deployment: dict):
     jira_url  = deployment["deploy_issue_url"]
     if deployment.get("type") == "hotfix":
         message = (
-            f"⚠️ {deployment.get('product', product_name)}：hotfix 日 +1 仍未蒐齊 PROD PR，已停止自動搜集。\n"
-            f"請人工確認 {issue_key}，並視情況手動轉「緊急簽核」。\n"
+            f"⚠️ {deployment.get('product', product_name)}：hotfix 日 +1 仍未轉「緊急簽核」，已停止自動追蹤。\n"
+            f"{issue_key} 所有 PROD PR 已收齊，轉「緊急簽核」後請手動補發通知②。\n"
             f"hotfix 單：{jira_url}"
         )
     else:
@@ -560,20 +561,19 @@ def process_hotfix(name: str, deployment: dict, product_config: dict, today: dat
                 deployment["stopped_reason"] = "signed"
                 changed = True
             return changed
-        if not deployment.get("emergency_notice_sent"):
-            print("  ⚠️  已轉緊急簽核但 PROD 未收齊 → TPM 個人通知（僅一次），持續搜集")
-            notify_manual_transition_needed(name, deployment)
-            deployment["emergency_notice_sent"] = True
-            changed = True
+    elif status and all_found and not deployment.get("ready_notice_sent"):
+        print("  ⚠️  PROD 已收齊、尚未轉緊急簽核 → TPM 個人通知（僅一次）")
+        notify_manual_transition_needed(name, deployment)
+        deployment["ready_notice_sent"] = True
+        changed = True
 
     # ── 停損 ──
     if today > cutoff:
         if all_found and not deployment.get("emergency_reached"):
-            print("  ⏰ hotfix 日 +1：PROD 已收齊但未轉緊急簽核 → TPM 個人通知，終止")
-            notify_manual_transition_needed(name, deployment)
-        else:
-            print("  ⏰ hotfix 日 +1 仍未蒐齊 PROD → 停損告警，終止")
+            print("  ⏰ hotfix 日 +1：PROD 已收齊但未轉緊急簽核 → TPM 個人通知，停止追蹤")
             notify_prod_timeout(name, deployment)
+        else:
+            print("  ⏰ hotfix 日 +1 仍未收齊 PROD → 停止追蹤（不通知）")
         deployment["status"] = "completed"
         deployment["stopped_reason"] = "timeout"
         changed = True

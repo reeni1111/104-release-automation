@@ -61,7 +61,7 @@ description: >
 
 > STG PR 找到時**不發 Teams 通知**，只更新 Jira Web/API 程式資訊欄位並推進到「STAGING測試中」狀態（依目的地狀態轉單；當次未成功則每 10 分排程持續重試直到成功）。
 
-> Hotfix 版通知①②、TPM 個人通知與停損告警文案見「Hotfix 流程」節。
+> Hotfix 版通知①②與 TPM 個人通知文案見「Hotfix 流程」節。
 
 > **人工轉單提醒 payload 格式**（`tpm.teams_personal_webhook_url`，Power Automate HTTP trigger）：
 > ```json
@@ -593,12 +593,13 @@ PR 建立後，告知使用者連結，等待簽核後 merge。
    - STG：已 merged，全部收集
    - PROD：open 或已 merged，每 repo 取第一筆
    - 有新 PR → 更新 Web/API 程式資訊（`customfield_12324`）；程式**不轉任何狀態**
-3. **緊急簽核判斷**：hotfix 單狀態為「緊急簽核」或之後（線上作業中、Production測試中、Production測試完成）即視為已轉 [AI 補充：避免排程錯過短暫停留]
+3. **PROD 收齊、尚未轉緊急簽核**：有 STG PR 的 repo 全找齊 PROD PR（判斷標準同維運），且 hotfix 單尚未到「緊急簽核」→ **TPM 個人通知（情境 1，僅一次）**，提醒手動轉「緊急簽核」（Jira 狀態取得失敗時該輪不發 [AI 補充]）
+4. **緊急簽核判斷**：hotfix 單狀態為「緊急簽核」或之後（線上作業中、Production測試中、Production測試完成）即視為已轉 [AI 補充：避免排程錯過短暫停留]
    - 有 STG PR 的 repo 全找齊 PROD PR（判斷標準同維運）→ **通知②**，終止（`stopped_reason=signed`）
-   - 未找齊 → **TPM 個人通知（僅一次）**，持續搜集；收齊後補發通知②
-4. **結束條件**
+   - 未找齊 → 持續搜集；收齊後發通知②
+5. **結束條件**
    - hotfix 單「結案」／「取消申請」→ 結束追蹤（`status=completed`）
-   - 停損 `today > hotfix 日 +1 日曆天`：PROD 已收齊但未轉緊急簽核 → TPM 個人通知 [AI 補充]；未收齊 → 停損告警；皆終止（`stopped_reason=timeout`）
+   - 停損 `today > hotfix 日 +1 日曆天`：PROD 已收齊但未轉緊急簽核 → **TPM 個人通知（情境 2）**；未收齊 → 不通知；皆停止追蹤（`stopped_reason=timeout`）
 
 **通知②**（產品頻道，@mention `approvers`）：
 ```
@@ -611,21 +612,23 @@ PR 建立後，告知使用者連結，等待簽核後 merge。
    - {repo 短標籤}：{PROD PR 連結}
 ```
 
-**TPM 個人通知**（`tpm.teams_personal_webhook_url`）：
+**TPM 個人通知**（`tpm.teams_personal_webhook_url`；共 2 種情境，各發一次）：
+
+情境 1：PROD 收齊、尚未轉「緊急簽核」（繼續追蹤，轉單後下一輪發通知②）
 ```
-⚠️ {product_name}：需人工轉單
-{issue_key} 無法自動轉為「緊急簽核」，請手動操作。
+⚠️ {product_name}：hotfix PROD PR 已收齊
+{issue_key} 所有 PROD PR 已收齊，請手動轉「緊急簽核」，轉單後將自動發送通知②。
 hotfix 單：{jira_url}
 ```
 
-**停損告警**（`tpm.teams_personal_webhook_url`）：
+情境 2：hotfix 日 +1 仍未轉「緊急簽核」（PROD 已收齊；停止追蹤）
 ```
-⚠️ {product_name}：hotfix 日 +1 仍未蒐齊 PROD PR，已停止自動搜集。
-請人工確認 {issue_key}，並視情況手動轉「緊急簽核」。
+⚠️ {product_name}：hotfix 日 +1 仍未轉「緊急簽核」，已停止自動追蹤。
+{issue_key} 所有 PROD PR 已收齊，轉「緊急簽核」後請手動補發通知②。
 hotfix 單：{jira_url}
 ```
 
-> 手動補發通知①／②：workflow 的 `product_name` 填 hotfix 條目 key（如「農場 hotfix 20261021」）。
+> 手動補發通知①／②：workflow 的 `product_name` 填 hotfix 條目 key（如「農場 hotfix 20261021」）；情境 2 已停止追蹤（`status=completed`），補發通知②時 `force` 需設 `true`。
 
 ### 完成回報格式（hotfix）
 
@@ -1266,7 +1269,7 @@ AUTH=(-u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Content-Type: application/json")
 | `type` | 固定 `hotfix`；程式以此走 hotfix 獨立流程 |
 | `product` | 對應 `config.json → products` 的產品名 |
 | `emergency_reached` | 偵測到 hotfix 單已達「緊急簽核」或之後時設 `true`（執行期才寫入） |
-| `emergency_notice_sent` | 已轉緊急簽核但 PROD 未收齊、已發 TPM 個人通知時設 `true`，防重複（執行期才寫入） |
+| `ready_notice_sent` | PROD 已收齊、尚未轉緊急簽核，已發 TPM 個人通知（情境 1）時設 `true`，防重複（執行期才寫入） |
 | `stopped_reason` | `signed` / `timeout`；hotfix 單「結案」／「取消申請」時僅設 `status=completed` |
 
 ---
