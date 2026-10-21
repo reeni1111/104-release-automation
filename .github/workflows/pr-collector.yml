@@ -51,10 +51,17 @@ jobs:
             echo "push rejected, retry $i"; sleep 5
           done
           echo "::error::state.json push failed after 5 retries"
-          WEBHOOK=$(jq -r '.tpm.teams_personal_webhook_url // ""' config.json)
-          if [ -n "$WEBHOOK" ] && ! printf '%s' "$WEBHOOK" | grep -q "FILL_IN"; then
-            RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-            MSG=$(printf '⚠️ PR Collector：state.json 連續 5 次 push 失敗，本輪狀態未落地，請人工確認。\nRun：%s' "$RUN_URL")
-            curl -sS -X POST -H 'Content-Type: application/json' -d "$(jq -n --arg m "$MSG" '{message:$m}')" "$WEBHOOK" || true
-          fi
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          MSG=$(printf '⚠️ PR Collector：state.json 連續 5 次 push 失敗，本輪狀態未落地，請人工確認。\nRun：%s' "$RUN_URL")
+          # 告警發到本輪所有追蹤中（status=active）條目指定的通訊軟體（notify_channel；缺欄位視為 teams）
+          for CH in $(jq -r '[.active_deployments[] | select(.status=="active") | (.notify_channel // "teams")] | unique | .[]' state.json); do
+            if [ "$CH" = "chat" ]; then
+              WEBHOOK=$(jq -r '.tpm.google_chat_personal_webhook_url // ""' config.json); KEY=text
+            else
+              WEBHOOK=$(jq -r '.tpm.teams_personal_webhook_url // ""' config.json); KEY=message
+            fi
+            if [ -n "$WEBHOOK" ] && ! printf '%s' "$WEBHOOK" | grep -q "FILL_IN"; then
+              curl -sS -X POST -H 'Content-Type: application/json' -d "$(jq -n --arg m "$MSG" --arg k "$KEY" '{($k):$m}')" "$WEBHOOK" || true
+            fi
+          done
           exit 1

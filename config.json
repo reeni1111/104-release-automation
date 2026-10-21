@@ -11,8 +11,10 @@
     "name": "FILL_IN_TPM_姓名",
     "jira_account_id": "FILL_IN_TPM_jira_account_id",
     "email": "FILL_IN_TPM_email",
-    "teams_personal_webhook_url": "FILL_IN_power_automate_personal_webhook"
+    "teams_personal_webhook_url": "FILL_IN_power_automate_personal_webhook",
+    "google_chat_personal_webhook_url": "FILL_IN_google_chat_TPM個人聊天室_webhook"
   },
+  "default_notify_channel": "teams",
   "products": {
     "FILL_IN_產品觸發關鍵字": {
       "display_name": "FILL_IN_顯示名稱",
@@ -43,11 +45,13 @@
       },
       "teams_deploy_channel_webhook_url": "FILL_IN_上線作業頻道_webhook",
       "teams_product_channel_webhook_url": "FILL_IN_產品頻道_webhook",
+      "google_chat_deploy_webhook_url": "FILL_IN_google_chat_上線作業聊天室_webhook",
+      "google_chat_product_webhook_url": "FILL_IN_google_chat_產品聊天室_webhook",
       "talent_engineering_members": [
-        { "name": "FILL_IN_姓名", "aad_id": "FILL_IN_aad_id" }
+        { "name": "FILL_IN_姓名", "aad_id": "FILL_IN_aad_id", "google_chat_id": "FILL_IN_google_chat_id" }
       ],
       "approvers": [
-        { "name": "FILL_IN_簽核人", "aad_id": "FILL_IN_aad_id" }
+        { "name": "FILL_IN_簽核人", "aad_id": "FILL_IN_aad_id", "google_chat_id": "FILL_IN_google_chat_id" }
       ]
     }
   },

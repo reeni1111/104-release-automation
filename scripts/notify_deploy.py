@@ -2,10 +2,12 @@
 """
 notify_deploy.py
 
-偵測 state.json 新增的部署，發送 Teams 上線作業頻道通知。
+偵測 state.json 新增的部署，發送上線作業頻道通知（Teams／Google Chat）。
 - push 觸發：deploy_date 有變動的產品才發送
 - workflow_dispatch 觸發：發送 NOTIFY_PRODUCT 指定的產品，若未指定則發送所有 active 產品
 - hotfix 條目（type=hotfix，key「{產品名} hotfix {YYYYMMDD}」）：以 product 對應 config，發 hotfix 版通知①
+- 通知管道依條目 notify_channel（teams／chat；缺欄位視為 teams）：teams 發 Adaptive Card 至 teams_deploy_channel_webhook_url，
+  chat 發文字訊息至 google_chat_deploy_webhook_url（@mention 用 <users/google_chat_id>）
 """
 
 import json
@@ -111,6 +113,17 @@ def build_payload(product_name, deployment, product_config):
         )
 
     selected = product_config.get('notify_deploy_card_blocks')
+
+    # Google Chat：同一組區塊轉成文字訊息（標題粗體），@mention 改用 google_chat_id
+    if deployment.get('notify_channel', 'teams') == 'chat':
+        chat_ids = [m['google_chat_id'] for m in members
+                    if m.get('google_chat_id') and 'FILL_IN' not in m['google_chat_id']]
+        blocks['mentions']['text'] = (" ".join(f"<users/{i}>" for i in chat_ids)
+                                      or "(成員 Google Chat ID 尚未設定)")
+        keys = [k for k in selected if k in blocks] if selected else list(blocks.keys())
+        texts = [f"*{blocks[k]['text']}*" if k == 'title' else blocks[k]['text'] for k in keys]
+        return {"text": "\n\n".join(texts)}
+
     if selected:
         body = [blocks[k] for k in selected if k in blocks]
         if 'mentions' not in selected:
@@ -188,16 +201,18 @@ def main():
 
     errors = []
     for product_name, deployment in to_notify_pairs:
-        print(f"[{product_name} {deployment['deploy_date']}] Sending notification...")
+        channel = deployment.get('notify_channel', 'teams')
+        print(f"[{product_name} {deployment['deploy_date']}] Sending notification ({channel})...")
         product_config = config['products'].get(deployment.get('product', product_name))
 
         if not product_config:
             print(f"  WARN: not found in config.json, skipping.")
             continue
 
-        webhook_url = product_config.get('teams_deploy_channel_webhook_url', '')
+        webhook_key = 'google_chat_deploy_webhook_url' if channel == 'chat' else 'teams_deploy_channel_webhook_url'
+        webhook_url = product_config.get(webhook_key, '')
         if 'FILL_IN' in webhook_url or not webhook_url:
-            print(f"  WARN: webhook URL not set, skipping.")
+            print(f"  WARN: webhook URL not set ({webhook_key}), skipping.")
             continue
 
         payload = build_payload(product_name, deployment, product_config)

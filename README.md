@@ -31,12 +31,12 @@ git push -u origin main
 
 3. Repo → **Actions** 分頁，若出現啟用提示就點啟用。
 4. Repo → Settings → Secrets and variables → Actions，新增：`GH_PAT`、`JIRA_EMAIL`、`JIRA_API_TOKEN`（操作手冊 6.2）。
-5. 建 Teams 頻道 Incoming Webhook（上線作業／產品頻道，操作手冊 6.4.2）與個人聊天 Power Automate 流程（6.4.3）。
+5. 建 Teams 頻道 Incoming Webhook（上線作業／產品頻道，操作手冊 6.4.2）與個人聊天 Power Automate 流程（6.4.3）；若使用 Google Chat，另建各聊天室連入 Webhook 與 TPM 個人通知聊天室（6.4.4、6.4.6）。
 6. 填 `config.json`：
    - `github.owner` / `github.repo`：**填你這個 repo**（skill 靠這個找 repo）。
-   - `jira.cloud_id` / `jira.base_url`；`tpm`（`name` / `jira_account_id` / `email` / `teams_personal_webhook_url`，TPM 個人相關資訊集中於此）。
-   - `products.{觸發關鍵字}`：依操作手冊第七章，用一張現行上線單＋Epic 帶出 Jira 欄位，再填 `hosting`（`aws` 雲端／`k8s` 地端）、repos、webhook、工程師/簽核人 AAD ID。**地端（k8s）產品**另填 `k8s_subtickets`（repo → ArgoCD app 名稱）；**雲端（aws）產品請移除 `k8s_subtickets`**。`jira_system_level` 為系統等級選項 id（全站固定共用，現值 `13204` = 1-2，沿用即可）。（選填）`jira_deploy_summary_template`：自訂上線單標題樣板（tokens：`{deploy_date}`、`{deploy_M_D}`、`{display_name}`）；未設用預設「{display_name} - {deploy_M_D} 維運上線」。
-7. 完成後即可在 Cowork 用 skill：輸入「YYYY/MM/DD 產品名」開始上線；hotfix 輸入「{YYYYMMDD} {產品名} hotfix」（僅雲端產品，與維運流程獨立追蹤；詳見 SKILL.md「Hotfix 流程」）。
+   - `jira.cloud_id` / `jira.base_url`；`tpm`（`name` / `jira_account_id` / `email` / `teams_personal_webhook_url` / `google_chat_personal_webhook_url`，TPM 個人相關資訊集中於此）；`default_notify_channel`（指令未加 `teams`／`chat` 時的預設通知管道）。
+   - `products.{觸發關鍵字}`：依操作手冊第七章，用一張現行上線單＋Epic 帶出 Jira 欄位，再填 `hosting`（`aws` 雲端／`k8s` 地端）、repos、Teams／Google Chat webhook、工程師/簽核人 AAD ID 與 Google Chat ID（操作手冊 6.4.5）。**地端（k8s）產品**另填 `k8s_subtickets`（repo → ArgoCD app 名稱）；**雲端（aws）產品請移除 `k8s_subtickets`**。`jira_system_level` 為系統等級選項 id（全站固定共用，現值 `13204` = 1-2，沿用即可）。（選填）`jira_deploy_summary_template`：自訂上線單標題樣板（tokens：`{deploy_date}`、`{deploy_M_D}`、`{display_name}`）；未設用預設「{display_name} - {deploy_M_D} 維運上線」。
+7. 完成後即可在 Cowork 用 skill：輸入「YYYY/MM/DD 產品名」開始上線（結尾可加 `teams`／`chat` 指定本張單通知管道）；hotfix 輸入「{YYYYMMDD} {產品名} hotfix」（僅雲端產品，與維運流程獨立追蹤；詳見 SKILL.md「Hotfix 流程」）。
 
 ## 前提
 

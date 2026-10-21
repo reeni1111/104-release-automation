@@ -20,7 +20,7 @@ jobs:
         with:
           fetch-depth: 2
 
-      - name: Send Teams deploy notification
+      - name: Send deploy notification (Teams / Google Chat)
         env:
           NOTIFY_PRODUCT: ${{ github.event.inputs.product_name }}
         run: python scripts/notify_deploy.py
