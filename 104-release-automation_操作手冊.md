@@ -1,7 +1,7 @@
 # 104 Release Workflow 操作手冊
 
 > 適用對象：TPM
-> 最後更新：2026-10-16
+> 最後更新：2026-10-21
 
 ---
 
@@ -28,7 +28,7 @@
 -  **新增產品**：[七、新增產品 完整 Checklist](#ch7)
 - **想了解 PR 搜集／通知的排程如何運作，或通知沒送出要排查時** → [四、自動化後台（GitHub Actions）](#ch4)
 - **要 review／merge PR、開分支、本地 git 同步或處理衝突時** → [九、Git 協作規範](#ch9)
-- **要更新 webhook／AAD ID，或新增產品設定時** → [八、config.json 維護](#ch8)
+- **要更新 webhook／AAD ID／Google Chat ID，或新增產品設定時** → [八、config.json 維護](#ch8)
 - **遇到通知沒收到、git 衝突、同產品兩張上線單等狀況時** → [十、常見問題](#ch10)
 
 ---
@@ -37,7 +37,7 @@
 
 ## 零、背景說明
 
-本系統用於管理產品上線流程的追蹤與通知。每次上線時，TPM 輸入日期與產品名稱，由 Claude 自動建立 Jira 上線單與 Epic、更新部署追蹤檔，並在各關鍵節點（上線準備就緒、PROD PR 全數就緒）自動發送 Teams 通知給相關工程師與簽核人員，取代人工逐一通知與狀態追蹤。
+本系統用於管理產品上線流程的追蹤與通知。每次上線時，TPM 輸入日期與產品名稱，由 Claude 自動建立 Jira 上線單與 Epic、更新部署追蹤檔，並在各關鍵節點（上線準備就緒、PROD PR 全數就緒）依每張單指定，自動發送 Teams 或 Google Chat 通知給相關工程師與簽核人員，取代人工逐一通知與狀態追蹤。
 
 ---
 
@@ -55,16 +55,18 @@
 | **排定送Q日期** | Jira 上線單欄位（customfield_11221），＝**上線日 −1 工作天**；建單（Step 1）時填入 |
 | **上STG日** | 通知①顯示的預計上 Staging 日期，＝**上線日 −2 工作天**；存於 state.json 的 `stg_date`。**與排定送Q日期是兩個不同日期** |
 | **state.json** | 系統追蹤檔，記錄目前各產品的上線日期、Jira 單號、PR 蒐集狀態與通知進度 |
-| **config.json** | 系統設定檔，記錄各產品的 Jira 欄位、工程師名單、Teams webhook 等固定設定 |
+| **config.json** | 系統設定檔，記錄各產品的 Jira 欄位、工程師名單、Teams／Google Chat webhook 等固定設定 |
 | **`deploy_date`（上線日期）** | 本次的正式上線日，存於 state.json（格式如 `20260702`）。排程窗口、PR 搜集的日期 token、Jira 日期欄位都以它為基準 |
-| **webhook** | 自動發送 Teams 通知所使用的 URL；頻道通知用 Teams Incoming Webhook，個人聊天通知用 Power Automate 中轉流程 |
+| **webhook** | 自動發送通知所使用的 URL。Teams：頻道通知用 Teams Incoming Webhook，個人聊天通知用 Power Automate 中轉流程；Google Chat：各聊天室的連入 Webhook（TPM 個人通知用 TPM 自建、僅本人一人的聊天室） |
 | **AAD Object ID** | 微軟帳號的唯一識別碼，用於在 Teams 通知中 @mention 指定成員 |
+| **Google Chat ID** | Google 帳號的數字識別碼（如 `113541630224167363997`），用於在 Google Chat 通知中 @mention 指定成員（寫法 `<users/{ID}>`）；查詢方式見 6.4.5 |
+| **通知管道（`notify_channel`）** | 每張上線單／hotfix 單各自指定通知發到 Teams 或 Google Chat：下指令時結尾加 `teams`／`chat`，未加用 config.json 的 `default_notify_channel`；記錄在 state.json 該單條目 |
 | **Description（上線單）** | Jira 上線單的描述欄位。系統建立上線單後，會在此欄位插入一個動態表格，自動列出本次 Epic 底下所有工作項目（依 JQL 查詢即時更新） |
-| **Adaptive Card** | Microsoft Teams 的訊息卡片格式，可在 Teams 頻道或聊天中顯示結構化內容（標題、內文、連結等），並支援 @mention 成員。本系統的頻道通知皆以此格式發送 |
+| **Adaptive Card** | Microsoft Teams 的訊息卡片格式，可在 Teams 頻道或聊天中顯示結構化內容（標題、內文、連結等），並支援 @mention 成員。本系統的 Teams 頻道通知皆以此格式發送；Google Chat 版以文字訊息發送 |
 | **GitHub Actions** | GitHub 內建的自動化執行環境。本系統用它執行兩個排程：state.json 有變動時立即發通知①，以及每 10 分鐘（窗口制）搜集 STG/PROD PR、轉換 Jira 狀態並發簽核通知 |
-| **Power Automate** | 微軟的自動化流程工具（Microsoft 365 服務）。本系統用它建立一個 HTTP trigger 流程，接收 GitHub Actions 的呼叫後，將訊息發送到 TPM 的 Teams 個人聊天（用於通知③） |
+| **Power Automate** | 微軟的自動化流程工具（Microsoft 365 服務）。本系統用它建立一個 HTTP trigger 流程，接收 GitHub Actions 的呼叫後，將訊息發送到 TPM 的 Teams 個人聊天（用於通知③；僅 Teams） |
 | **Jira Cloud ID** | 104 Jira 站台的唯一識別碼（`config.json` 的 `jira.cloud_id`）。每次呼叫 Jira API 都要帶它以指定「對哪個 Jira 站台操作」。全公司只有一個 Jira，所有產品共用、固定不變 |
-| **Jira Base URL** | Jira 單子的網址前綴（`config.json` 的 `jira.base_url`，如 `https://104corp.atlassian.net/browse`）。用來把單號組成可點擊連結（如 `…/browse/ITPMTALREQ-8600`）放進 Teams 通知與 state.json。全站共用 |
+| **Jira Base URL** | Jira 單子的網址前綴（`config.json` 的 `jira.base_url`，如 `https://104corp.atlassian.net/browse`）。用來把單號組成可點擊連結（如 `…/browse/ITPMTALREQ-8600`）放進通知與 state.json。全站共用 |
 | **Datasource ID（Step 4）** | Step 4 在上線單描述欄插入「Epic 工作項目動態表格」時，指定要用哪個 Jira JQL 資料來源來渲染該表格的固定識別碼（`d8b75300-…`）。屬此 Jira 站台的內部固定值，所有產品共用；僅在 Step 4 用到 |
 | **Jira Workflow（工作流程）** | 一張 Jira 單子「有哪些狀態、狀態之間怎麼流動」的規則圖。所有上線單共用同一個（19_Requirement Wf V4.6） |
 | **狀態（status）** | 上線單目前所處的階段，如「staging 作業中」「STAGING測試中」「簽核中」「結案」 |
@@ -85,7 +87,7 @@
 ### 主要業務流程（每次上線時執行）
 
 ```
-TPM 輸入「YYYY/MM/DD {產品名}」（地端產品輸入「YYYY/MM/DD {產品名} k8s」）
+TPM 輸入「YYYY/MM/DD {產品名}」（地端產品輸入「YYYY/MM/DD {產品名} k8s」；結尾可加 teams／chat 指定通知管道）
       │
       ▼ Claude 自動執行
   Jira 上線單建立 → Epic 建立 → 連結 → 插入 Epic 工作項目連結至上線單描述欄
@@ -93,8 +95,8 @@ TPM 輸入「YYYY/MM/DD {產品名}」（地端產品輸入「YYYY/MM/DD {產品
       │
       ▼ TPM review PR → Merge（state.json 正式生效）
       │
-      ├─▶ 【通知①】Teams 上線作業頻道（merge 後立即觸發）
-      │       Adaptive Card @mention 全體工程師
+      ├─▶ 【通知①】上線作業頻道（merge 後立即觸發；Teams 或 Google Chat，依該單指定）
+      │       @mention 全體工程師
       │       內容：上線日期、上STG日期、Jira 上線單連結
       │
       ▼ GitHub Actions 窗口制排程（每 10 分鐘）
@@ -103,12 +105,12 @@ TPM 輸入「YYYY/MM/DD {產品名}」（地端產品輸入「YYYY/MM/DD {產品
       ▼ 上線日 −1 工作天起
   搜集 PROD PR（open，簽核在 merge 前）→ 有 STG PR 的 repo 全到齊 → 嘗試轉 Jira 狀態「簽核中」（帶簽核主管）
       │
-      ├─ 轉單成功 ──▶ 【通知②】Teams 產品頻道（Happy Path）
-      │                   Adaptive Card @mention 簽核人
+      ├─ 轉單成功 ──▶ 【通知②】產品頻道（Happy Path；Teams 或 Google Chat，依該單指定）
+      │                   @mention 簽核人
       │                   內容：PROD PR 就緒、Jira 上線單連結、各 repo PR 連結
       │
       ├─ 轉單失敗 ──▶ 【通知③】TPM 個人聊天（Exception）
-      │                   Power Automate 發訊息：「{產品名}：需人工轉單」
+      │                   發訊息（Teams：Power Automate／Chat：TPM 個人通知聊天室）：「{產品名}：需人工轉單」
       │                   → 排程每 10 分自動重試（通知③僅首次發送），可等自動重試或手動轉單
       │                   （超過上線日 +1 日曆天仍失敗 → 再發通知③一次並終止）
       │
@@ -119,7 +121,7 @@ TPM 輸入「YYYY/MM/DD {產品名}」（地端產品輸入「YYYY/MM/DD {產品
 ### Hotfix 流程（與上方維運流程完全獨立）
 
 ```
-TPM 輸入「{YYYYMMDD} {產品名} hotfix」
+TPM 輸入「{YYYYMMDD} {產品名} hotfix」（結尾可加 teams／chat）
       │
       ▼ Claude 自動執行
   hotfix 單建立（送Q 11:00、上線 12:00 同一天）→ Epic「[hotfix] {YYYYMMDD} 上線」→ 連結 → 插入 Epic 工作項目連結
@@ -127,7 +129,7 @@ TPM 輸入「{YYYYMMDD} {產品名} hotfix」
       │
       ▼ TPM review PR → Merge
       │
-      ├─▶ 【通知①（hotfix 版）】Teams 上線作業頻道，@mention 工程師
+      ├─▶ 【通知①（hotfix 版）】上線作業頻道（Teams 或 Google Chat，依該單指定），@mention 工程師
       │
       ▼ 每 10 分鐘搜集（不套窗口）：title 含日期 + stg/prod + hotfix
   STG（已 merged）、PROD（open 或已 merged）→ 更新 Jira Web/API 程式資訊（程式不轉狀態）
@@ -135,7 +137,7 @@ TPM 輸入「{YYYYMMDD} {產品名} hotfix」
       ├─ PROD 收齊、尚未轉緊急簽核 ──▶ 【TPM 個人通知（情境 1）】（僅一次），提醒手動轉「緊急簽核」
       │
       ▼ TPM 手動觸發「緊急上線」→ 狀態「緊急簽核」
-      ├─ PROD 已收齊 ──▶ 【通知②（hotfix 版）】Teams 產品頻道 @mention 簽核人，終止
+      ├─ PROD 已收齊 ──▶ 【通知②（hotfix 版）】產品頻道（依該單指定）@mention 簽核人，終止
       └─ PROD 未收齊 ──▶ 持續搜集；收齊後發通知②
       │
       └─ 結束：hotfix 單「結案」／「取消申請」→ 停止追蹤
@@ -163,6 +165,8 @@ YYYY/MM/DD {產品名}              # 雲端（AWS）產品
 YYYY/MM/DD {產品名} k8s          # 地端（K8s）產品，會一併建立主站 K8s 上線子單
 YYYY/MM/DD {產品名} k8s dr       # 地端＋DR 站：主站與 DR 站子單一起建（每 repo 各一張）
 {YYYYMMDD} {產品名} hotfix       # hotfix（如「20261021 農場 hotfix」；僅雲端產品）
+{上列任一指令} chat              # 結尾加 chat：本張單通知發 Google Chat（如「2026/11/30 Pool chat」）
+{上列任一指令} teams             # 結尾加 teams：本張單通知發 Teams；都未加時用 config.json 的 default_notify_channel（過渡期為 teams）
 ```
 
 Claude 會自動依序執行以下步驟。
@@ -190,7 +194,7 @@ Claude 會自動依序執行以下步驟。
 
 | 時機 | 動作 |
 |------|------|
-| 立即 | Teams 上線頻道通知（通知①） |
+| 立即 | 上線頻道通知（通知①，Teams 或 Google Chat 依該單指定） |
 | 每 10 分（窗口制） | 上線日 −3 工作天起搜 STG、−1 工作天起搜 PROD → 更新 Jira → 轉狀態 → 轉「簽核中」成功發簽核通知（通知②） |
 
 ### 3.3 你需要做的：PR 簽核
@@ -208,7 +212,7 @@ Claude 完成後會給你 PR 連結，執行以下步驟：
 cd ~/Documents/{repo-name} && git checkout main && git pull origin main
 ```
 
-Merge 完成後，GitHub Actions 自動觸發 Teams 上線頻道通知。
+Merge 完成後，GitHub Actions 自動觸發上線頻道通知（通知①）。
 
 ---
 
@@ -216,14 +220,14 @@ Merge 完成後，GitHub Actions 自動觸發 Teams 上線頻道通知。
 
 ## 四、自動化後台（GitHub Actions）
 
-### 4.1 Teams 通知情境總覽
+### 4.1 通知情境總覽
 
 | # | 通知名稱 | 觸發時機 | 發送對象 | 頻道 |
 |---|---------|---------|---------|------|
 | 1 | 上線準備通知 | state.json 的 `deploy_date`（上線日期）有變動並 push 至 main | 工程師（`talent_engineering_members`，工程師名單） | 上線作業頻道 |
 | 2 | PROD PR 簽核通知 | 有 STG PR 的 repo 之 PROD PR 全找齊、上線單轉「簽核中」成功 | 簽核人（`approvers`，簽核人名單） | 產品頻道 |
-| 3 | 人工轉單提醒 | PROD PR 全找到但自動轉「簽核中」失敗（僅首次失敗發送；重試至停損日仍失敗會再發一次並終止） | TPM 個人聊天 | TPM 個人聊天（Power Automate） |
-| 4 | 安全停損告警 | 超過上線日 +1 日曆天（`today > 上線日+1`，即上線日 +2 起）仍未蒐齊 PROD PR | TPM 個人聊天 | TPM 個人聊天（Power Automate） |
+| 3 | 人工轉單提醒 | PROD PR 全找到但自動轉「簽核中」失敗（僅首次失敗發送；重試至停損日仍失敗會再發一次並終止） | TPM 個人聊天 | TPM 個人聊天（Teams：Power Automate／Chat：TPM 個人通知聊天室） |
+| 4 | 安全停損告警 | 超過上線日 +1 日曆天（`today > 上線日+1`，即上線日 +2 起）仍未蒐齊 PROD PR | TPM 個人聊天 | TPM 個人聊天（Teams：Power Automate／Chat：TPM 個人通知聊天室） |
 
 **hotfix 版通知**（對象與頻道同上表；文案見 4.2、4.3）：
 
@@ -231,11 +235,13 @@ Merge 完成後，GitHub Actions 自動觸發 Teams 上線頻道通知。
 - 通知②：hotfix 單已達「緊急簽核」（或之後）且有 STG PR 的 repo 全找齊 PROD PR
 - TPM 個人通知（2 種情境，各發一次）：情境 1：PROD 已收齊、尚未轉「緊急簽核」；情境 2：hotfix 日 +1 時 PROD 已收齊但仍未轉「緊急簽核」（停止追蹤）
 
+**通知管道**：上表所有通知都依該單 `notify_channel` 發到 Teams 或 Google Chat（同一張單的通知不會分散兩邊）；條目缺此欄位時視為 Teams [AI 補充]。Teams 欄位：`teams_deploy_channel_webhook_url`／`teams_product_channel_webhook_url`／`tpm.teams_personal_webhook_url`；Google Chat 欄位：`google_chat_deploy_webhook_url`／`google_chat_product_webhook_url`／`tpm.google_chat_personal_webhook_url`。
+
 ### 4.2 notify-deploy.yml（上線準備通知）
 
 - **觸發條件：** state.json 被 push 到 main，且（1）`deploy_date` 有變動，或（2）`pending_queue` 有新增條目
-- **執行內容：** 發送 Adaptive Card 至上線作業頻道，內容包含上線日期、STG 日期、上線單連結，並列出工程師需在討論串留言的事項（STG PR / PROD PR / Develop PR / APIM / SRE / Rundown）
-- **@mention：** `talent_engineering_members` 中已填 `aad_id` 的工程師
+- **執行內容：** 依該單通知管道發送至上線作業頻道（Teams：Adaptive Card；Google Chat：文字訊息，標題粗體），內容包含上線日期、STG 日期、上線單連結，並列出工程師需在討論串留言的事項（STG PR / PROD PR / Develop PR / APIM / SRE / Rundown）
+- **@mention：** `talent_engineering_members` 中已填 `aad_id`（Teams）或 `google_chat_id`（Google Chat，寫法 `<users/{ID}>`）的工程師，依名單順序
 - **手動補發：** GitHub Actions → Notify Deploy Channel →「Run workflow」，可指定產品名稱（留空＝所有 active 產品）。手動觸發時，active 條目與所有 `pending_queue` 條目的通知都會一併發送。
 
 **通知內容版型**（順序、項目符號皆以程式 `notify_deploy.py` 實際輸出為準）：
@@ -295,7 +301,7 @@ hotfix 單：{Jira 連結}
 
 - **觸發條件：** 每 10 分鐘自動執行（UTC）；窗口外由腳本即刻結束
 - **PR 搜集方式：** 以 PR **title** 為準——用「上線日期 token（`YYYYMMDD` 與 `YYMMDD`）」比對 title、再以 title 的 `stg`/`prod`（不分大小寫）分類，STG 只取**已 merged** 的 PR、PROD 取 **open** 的 PR（簽核在 merge 之前）；維運搜集排除 title 含 `hotfix`（不分大小寫）的 PR。不依賴 head/base 分支名稱（各 repo 命名不一致）。工作日回推只跳週末（國定假日視為工作日）。
-- **STG（上線日 −3 工作天起）：** 搜集各 repo 中 title 含上線日期 + `stg`/`[stg]` 且已 merged 的 PR，寫入 Jira Web/API 程式資訊欄位；**找到 STG PR 後即嘗試將上線單推進到「STAGING測試中」狀態，若當次未轉成功，之後每 10 分排程會持續重試直到成功**，**不發 Teams 通知**
+- **STG（上線日 −3 工作天起）：** 搜集各 repo 中 title 含上線日期 + `stg`/`[stg]` 且已 merged 的 PR，寫入 Jira Web/API 程式資訊欄位；**找到 STG PR 後即嘗試將上線單推進到「STAGING測試中」狀態，若當次未轉成功，之後每 10 分排程會持續重試直到成功**，**不發通知**
 - **PROD（上線日 −1 工作天起）：** 搜集 `prod`/`[prod]` PR（同樣 title 比對，取 **open**），**有 STG PR 的 repo** 全找齊對應 PROD PR 後嘗試轉「簽核中」（無 STG PR 的 repo 不列入、不等待；轉單自動帶簽核主管）：
   - **成功** → 發 PROD PR 簽核通知至產品頻道（通知②，@mention 簽核人），終止
   - **失敗** → 發人工轉單提醒至 TPM 個人聊天（**僅首次失敗發送**），保持追蹤、之後每 10 分自動重試（如 QA 尚未把單轉到「Staging測試完成」的時序問題會自癒）；**超過上線日 +1 日曆天仍失敗**才再發一次提醒並終止
@@ -337,7 +343,7 @@ hotfix 單：{Jira 連結}
 
 > 每個 repo 都會列出；本次無 PR 的 repo 仍會出現、僅剩標籤（如 `Rundeck：`）。
 
-**通知②（PROD PR 簽核通知）版型**（只列已收齊 PROD PR 的 repo，每個一行；以程式 `collect_prs.py` 實際輸出為準）：
+**通知②（PROD PR 簽核通知）版型**（只列已收齊 PROD PR 的 repo，每個一行；以程式 `collect_prs.py` 實際輸出為準；Google Chat 版內容相同，標題以粗體呈現、@mention 改用 `<users/{google_chat_id}>`）：
 
 ```
 🚀 PROD PR 簽核通知｜{顯示名稱} {上線日YYYYMMDD}          ← 標題（粗體）
@@ -403,7 +409,7 @@ hotfix 單：{Jira 連結}
 
 `state.json` 以產品名為 key 管理各產品的上線追蹤。若同一產品同時有兩張（或多張）上線單，系統使用 **`pending_queue`** 暫存後續待啟用的條目：
 
-1. **Claude 在 Step 5 自動判斷**：若該產品已有 active 條目，不覆蓋，改在現有條目的 `pending_queue` 陣列新增一筆（含 `deploy_date`、`stg_date`、`deploy_issue_key`、`deploy_issue_url`、`epic_key`）
+1. **Claude 在 Step 5 自動判斷**：若該產品已有 active 條目，不覆蓋，改在現有條目的 `pending_queue` 陣列新增一筆（含 `deploy_date`、`stg_date`、`deploy_issue_key`、`deploy_issue_url`、`epic_key`、`notify_channel`）
 2. **通知①同步發送**：PR merge 後，`notify_deploy.py` 會同時替 `pending_queue` 新增的條目發送上線準備通知（不只發 active 條目）
 3. **自動啟用**：待前張單轉「簽核中」成功，`collect_prs.py` 自動將 `pending_queue` 第一筆提升為 active，**無需人工操作**
 4. **hotfix 不佔用 pending_queue**：hotfix 條目使用獨立 key（`{產品名} hotfix {YYYYMMDD}`），不進入、也不影響該產品維運條目的 active／`pending_queue`；同產品同一天可同時有維運與 hotfix，兩者以 PR title 是否含 `hotfix` 區分、互不干擾
@@ -419,8 +425,9 @@ hotfix 單：{Jira 連結}
 | **Claude Cowork** | 主要操作介面，執行上線流程 | Claude 桌面版 |
 | **Jira MCP（Atlassian）** | 建立上線單、Epic、連結、更新欄位 | Cowork Plugins |
 | **GitHub MCP** | 讀寫 config.json、state.json、開 PR | Cowork Plugins |
-| **GitHub Actions** | 自動排程搜集 PR、發 Teams 通知 | {org}/{repo-name} |
-| **Power Automate** | 接收 webhook 並發送 Teams Adaptive Card | Microsoft 365 |
+| **GitHub Actions** | 自動排程搜集 PR、發 Teams／Google Chat 通知 | {org}/{repo-name} |
+| **Power Automate** | 接收 webhook 並發送 Teams Adaptive Card（僅 Teams） | Microsoft 365 |
+| **Google Chat** | 接收 `notify_channel=chat` 的單的通知；各聊天室建連入 Webhook | Google Workspace（公司限用 Prisma 瀏覽器開啟） |
 | **VS Code** | 本地編輯程式、管理 git | 本機 |
 
 ---
@@ -509,11 +516,15 @@ cd ~/Documents/{repo-name} && git status
 | `github.owner` / `github.repo` | 本 repo 的 GitHub owner 與 repo 名稱；skill 靠這個決定要操作哪個 repo |
 | `teams_deploy_channel_webhook_url` | 上線作業頻道 webhook（通知 1 用） |
 | `teams_product_channel_webhook_url` | 產品頻道 webhook（通知 2 用） |
+| `google_chat_deploy_webhook_url` / `google_chat_product_webhook_url` | Google Chat 上線作業聊天室／產品聊天室 webhook（`notify_channel=chat` 的通知 1／2 用；兩者可為同一聊天室；見 6.4.4） |
 | `tpm.name` / `tpm.jira_account_id` / `tpm.email` / `tpm.teams_personal_webhook_url` | TPM 個人相關資訊，集中於 top-level `tpm` 區塊：`teams_personal_webhook_url` 供通知 3／安全停損告警；`jira_account_id` 供 K8s 子單指派；`email` 供個人聊天 webhook 設定 |
+| `tpm.google_chat_personal_webhook_url` | TPM 個人通知（Google Chat 版）：TPM 自建、僅本人一人的聊天室 webhook（見 6.4.6） |
+| `default_notify_channel` | 指令未加 `teams`／`chat` 時的預設通知管道（過渡期 `teams`） |
 | `products.{產品名}.hosting` | 託管環境：`aws`（雲端）或 `k8s`（地端） |
 | `products.{產品名}.k8s_subtickets` | （限地端 hosting=k8s）repo → ArgoCD app 名稱；上線時據此建立 K8s 子單 |
 | `products.{產品名}.deploy_time` | 該產品上線時間（如 CMS＝10:00；未填預設 12:00）。用於排定上線日期與通知①文案；排定送Q時間固定 12:00 |
 | `talent_engineering_members[].aad_id` | 每位工程師的 Teams AAD Object ID |
+| `talent_engineering_members[].google_chat_id` / `approvers[].google_chat_id` | 工程師、簽核人的 Google Chat ID（見 6.4.5） |
 | `products.{產品名}.approvers[].aad_id` | 該產品簽核人 Teams AAD Object ID（per-product；外層 `approvers` 保留為空陣列 fallback） |
 | `products.{產品名}.jira_sign_manager_account_id` | 該產品**簽核主管的 Jira accountId**（轉「簽核中」validator 必填；為 Jira 帳號 ID，非 AAD Object ID） |
 | `products.{產品名}.jira_system_level` | 系統等級（開上線單「系統等級」欄用）；存選項 id，`13204` = 「1-2」，全站固定共用 |
@@ -599,6 +610,43 @@ Teams 個人聊天不支援直接 webhook，需透過 Power Automate 建立中�
 13. 誰可以觸發流程選擇「**任何人**」
 14. 複製「**HTTP URL**」→ 填入 Github config.json 的 `tpm.teams_personal_webhook_url`
 
+#### 6.4.4 如何取得 Google Chat 聊天室 Webhook URL
+
+> 公司限制 Google Chat 只能用 Prisma 瀏覽器開啟；手機 App 無法設定 webhook。
+
+1. 在 Prisma 開啟目標聊天室
+2. 點聊天室名稱旁的「**▼**」→ 選「**應用程式與整合**」
+3. 在 Webhook 區塊點「**新增 Webhook**」
+4. 名稱填「上線自動化」；顯示圖片網址選填（須為圖片檔直連網址，如結尾 `.jpeg`／`.png`，最小 128×128 像素；儲存後會自動轉成 `lh*.googleusercontent.com/proxy/...`，屬正常）
+5. 點「**儲存**」→ 複製清單中該 webhook 的網址（格式 `https://chat.googleapis.com/v1/spaces/.../messages?key=...&token=...`）→ 填入 config.json 對應欄位
+   - 上線作業聊天室 → `google_chat_deploy_webhook_url`
+   - 產品聊天室 → `google_chat_product_webhook_url`
+
+> 此網址等同發訊權限，請勿貼到公開處。
+
+#### 6.4.5 如何查詢成員的 Google Chat ID
+
+Google Chat ID 是 Google 帳號的數字識別碼，格式如：`113541630224167363997`，用於 @mention（寫法 `<users/{ID}>`）。
+
+👉 https://developers.google.com/people/api/rest/v1/people/searchDirectoryPeople
+
+1. 在 Prisma 開啟上方連結，點右側「**Try it**」（APIs Explorer）
+2. 填入以下欄位，其他留空：
+   - `query`：同事的 email（如 `yorick.chen@104.com.tw`）
+   - `readMask`：`names,emailAddresses`
+   - `sources`：下拉選 `DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE`
+3. Credentials 保留「**Google OAuth 2.0**」，點「**Execute**」（第一次需以公司帳號登入並允許）
+4. 回傳結果中 `"resourceName": "people/…"`，`people/` 後的數字即為 Google Chat ID
+5. 填入 config.json 對應成員的 `google_chat_id`
+
+#### 6.4.6 如何設定 TPM 個人通知聊天室（Google Chat 版）
+
+Google Chat webhook 只能建在聊天室，無法直接發到個人私訊，因此由 TPM 自建一個只有本人的聊天室代替。
+
+1. 在 Prisma 開啟 Google Chat，建立聊天室（如「TPM 自動化通知」），不加其他成員
+2. 依 6.4.4 在此聊天室新增 Webhook
+3. 將網址填入 config.json 的 `tpm.google_chat_personal_webhook_url`
+
 ### 6.5 安裝 Skill 到 Cowork [AI 補充]
 
 > 只有第一次導入時做一次；更新 skill 版本時重複本節即可。
@@ -640,6 +688,9 @@ Skill 觸發後需要知道你的 GitHub repo 位置（`{owner}/{repo}`）——
 - [ ] 產品頻道 webhook URL → `teams_product_channel_webhook_url`（通知②用）
 - [ ] 需 @mention 的工程師 AAD Object ID → `talent_engineering_members[].aad_id`
 - [ ] 需 @mention 的主管／簽核人 AAD Object ID → `approvers[].aad_id`（per-product；外層 `approvers: []` 為 fallback）
+- [ ] Google Chat 上線作業聊天室 webhook → `google_chat_deploy_webhook_url`（通知①，`notify_channel=chat` 用）
+- [ ] Google Chat 產品聊天室 webhook → `google_chat_product_webhook_url`（通知②，`notify_channel=chat` 用）
+- [ ] 工程師、簽核人 Google Chat ID → `talent_engineering_members[].google_chat_id`／`approvers[].google_chat_id`
 - [ ] 所有 repo → `repos[]`
 - [ ] `hosting`：`aws`（雲端）或 `k8s`（地端）；地端另填 `k8s_subtickets`（repo → ArgoCD app 名稱，如 `blog-web`）
 - [ ] 上線時間 → `deploy_time`（如 CMS＝10:00；未填預設 12:00）
@@ -655,13 +706,14 @@ Skill 觸發後需要知道你的 GitHub repo 位置（`{owner}/{repo}`）——
 
 **B. GitHub / Repo**
 
-- [ ] `repo_display_names`：每個 repo 的短標籤，顯示於 Jira 欄位與 Teams 通知
+- [ ] `repo_display_names`：每個 repo 的短標籤，顯示於 Jira 欄位與通知
 - [ ] **GH_PAT 權限**：現有 `GH_PAT` secret 必須能讀取新產品的**所有 repo**（尤其跨 org 或私有 repo），否則 PR 搜集抓不到任何 PR
 - [ ] **跨團隊協議**：PR 搜集**不依賴分支命名**，改看 PR title——新產品工程師的 STG/PROD PR **title 必須含上線日期（YYYYMMDD 或 YYMMDD）與 `stg`/`[stg]` 或 `prod`/`[prod]`（不分大小寫）**；STG PR 須**已 merged**，PROD PR 為 **open**（簽核在 merge 之前）；**hotfix PR title 另須含 `hotfix`（不分大小寫）**，hotfix PROD PR 為 open 或已 merged；維運 PR title 不得含 `hotfix`
 
 **C. 可沿用 / 共用的項目（新增產品時通常不用改）**
 
-- [ ] `tpm`（`name` / `jira_account_id` / `email` / `teams_personal_webhook_url`）：TPM 個人資訊集中於 top-level `tpm` 區塊，**跨產品共用**。除非換不同 TPM 負責，否則沿用即可
+- [ ] `tpm`（`name` / `jira_account_id` / `email` / `teams_personal_webhook_url` / `google_chat_personal_webhook_url`）：TPM 個人資訊集中於 top-level `tpm` 區塊，**跨產品共用**。除非換不同 TPM 負責，否則沿用即可
+- [ ] `default_notify_channel`：指令未加 `teams`／`chat` 時的預設通知管道（過渡期 `teams`，全面切換時改 `chat`）
 - [ ] `jira.cloud_id` / `jira.base_url`：同一 Jira cloud 共用
 - [ ] Step 4 的 datasource ID：內部固定值，同 Jira cloud 共用（建議建完第一張單目視確認表格有正常渲染）
 
@@ -671,7 +723,7 @@ Skill 觸發後需要知道你的 GitHub repo 位置（`{owner}/{repo}`）——
 
 ## 八、config.json 維護
 
-### 更新 webhook URL 或 aad_id
+### 更新 webhook URL、aad_id 或 google_chat_id
 
 由 Claude 代為更新：直接告訴 Claude 要改的欄位與值，Claude 會開 PR 讓你確認後 merge。
 
@@ -703,6 +755,8 @@ Skill 觸發後需要知道你的 GitHub repo 位置（`{owner}/{repo}`）——
   "k8s_subtickets": {...},
   "teams_deploy_channel_webhook_url": "...",
   "teams_product_channel_webhook_url": "...",
+  "google_chat_deploy_webhook_url": "...",
+  "google_chat_product_webhook_url": "...",
   "talent_engineering_members": [...],
   "approvers": [...]
 }
@@ -711,6 +765,10 @@ Skill 觸發後需要知道你的 GitHub repo 位置（`{owner}/{repo}`）——
 > `hosting` ＝ `aws`（雲端）或 `k8s`（地端）；`k8s_subtickets` 僅地端產品需要（雲端產品請移除該欄位）。
 
 > `jira_system_level`：系統等級選項 id（現值一律 `13204` = 1-2），所有產品必填。（選填）`jira_deploy_summary_template`：自訂上線單標題樣板（tokens `{deploy_date}`=YYYY/MM/DD、`{deploy_M_D}`=M/D、`{display_name}`）；未設用預設 `{display_name} - {deploy_M_D} 維運上線`。
+
+> 人員欄位：`talent_engineering_members`／`approvers` 每人含 `name`、`aad_id`（Teams）、`google_chat_id`（Google Chat）。
+
+> `default_notify_channel`（頂層）：指令未加 `teams`／`chat` 時的預設通知管道；全面改用 Google Chat 時，請 Claude 將此值改為 `chat`。
 
 ---
 
@@ -786,18 +844,19 @@ git push origin config/update-webhook-url
 
 ## 十、常見問題
 
-### Q：Teams 上線頻道沒收到通知？
+### Q：上線頻道沒收到通知（通知①）？
 
-1. 確認 state.json 的 `deploy_date` 是否有更新（去 GitHub 確認 commit 記錄）
-2. 去 GitHub Actions → Notify Deploy Channel → 查看最新一次 run 的 log
-3. 若 log 顯示 `WARN: webhook URL not set`，表示 config.json 的 webhook URL 未填
-4. 需要補發時：GitHub Actions → Notify Deploy Channel →「Run workflow」，可指定產品名稱（留空＝所有 active 產品）
+1. 確認 state.json 該單的 `notify_channel`（`teams`／`chat`；缺欄位視為 teams），到對應的 Teams 頻道或 Google Chat 聊天室查看
+2. 確認 state.json 的 `deploy_date` 是否有更新（去 GitHub 確認 commit 記錄）
+3. 去 GitHub Actions → Notify Deploy Channel → 查看最新一次 run 的 log
+4. 若 log 顯示 `WARN: webhook URL not set`，表示 config.json 的 webhook URL 未填（括號內為未填的欄位名）
+5. 需要補發時：GitHub Actions → Notify Deploy Channel →「Run workflow」，可指定產品名稱（留空＝所有 active 產品）
 
 ### Q：PROD PR 找齊了，但沒收到簽核通知（通知②）？
 
 1. 去 GitHub Actions → **PR Collector & Deploy Notifier** → 看最新 run 的「Run PR collector」log
 2. log 印「`❌ 轉單失敗: HTTP 400 …`」→ 依 Jira 錯誤訊息處理（如「請選擇簽核主管」＝ config 的 `jira_sign_manager_account_id` 未設定）；log 印「`⚠️ 找不到可轉到「簽核中」的 transition`」＝ 上線單還停在較早狀態（例如 QA 尚未轉「Staging測試完成」）。轉單失敗會發通知③到 TPM 個人聊天（僅首次），之後每 10 分自動重試；超過上線日 +1 日曆天仍失敗才終止
-3. log 印「`❌ Teams signing notification failed`」→ 產品頻道 webhook 有問題；此情況下一輪排程會自動重試
+3. log 印「`❌ Signing notification failed (teams)`」或「`(chat)`」→ 該通知管道的產品頻道 webhook 有問題；此情況下一輪排程會自動重試
 4. 確認 state.json 該產品 `status` 是否已是 `completed`（completed 後排程不再處理該產品）
 
 ### Q：本地 git 跟遠端衝突？
