@@ -6,6 +6,8 @@ notify_signing.py
 設計：
 - 強制指定單一產品（環境變數 NOTIFY_PRODUCT）；不支援一次發送全部。
   hotfix 條目以其 key 指定（如「農場 hotfix 20261021」），以 product 對應 config，發 hotfix 版文案。
+- 通知管道依條目 notify_channel（teams／chat；缺欄位視為 teams）：teams 發 Adaptive Card 至 teams_product_channel_webhook_url，
+  chat 發文字訊息至 google_chat_product_webhook_url（@mention 用 <users/google_chat_id>）。
 - 防呆（可用 FORCE=true 覆蓋）：
   * 未指定產品            → 直接失敗
   * 產品不在 state.json   → 直接失敗
@@ -22,8 +24,22 @@ import sys
 import urllib.request
 
 
-def post_card(webhook_url: str, title: str, body: str, entities: list) -> int:
-    payload = {
+def post_card(webhook_url: str, title: str, body: str, entities: list, channel: str = "teams") -> int:
+    if channel == "chat":
+        payload = {"text": f"*{title}*\n\n{body}"}
+    else:
+        payload = _teams_card(title, body, entities)
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        webhook_url, data=data,
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return resp.status
+
+
+def _teams_card(title: str, body: str, entities: list) -> dict:
+    return {
         "type": "message",
         "attachments": [{
             "contentType": "application/vnd.microsoft.card.adaptive",
@@ -39,13 +55,6 @@ def post_card(webhook_url: str, title: str, body: str, entities: list) -> int:
             },
         }],
     }
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        webhook_url, data=data,
-        headers={"Content-Type": "application/json"}, method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return resp.status
 
 
 def main():
@@ -72,12 +81,14 @@ def main():
         print(f"ERROR: '{product_name}' 不在 config.json 的 products。", file=sys.stderr)
         sys.exit(1)
 
-    webhook_url = product_config.get("teams_product_channel_webhook_url", "")
+    deployment  = active[product_name]
+    channel     = deployment.get("notify_channel", "teams")
+    webhook_key = "google_chat_product_webhook_url" if channel == "chat" else "teams_product_channel_webhook_url"
+    webhook_url = product_config.get(webhook_key, "")
     if not webhook_url or "FILL_IN" in webhook_url:
-        print(f"ERROR: '{product_name}' 的 teams_product_channel_webhook_url 未設定。", file=sys.stderr)
+        print(f"ERROR: '{product_name}' 的 {webhook_key} 未設定。", file=sys.stderr)
         sys.exit(1)
 
-    deployment = active[product_name]
     prod_prs = deployment.get("prod_prs", {})
 
     # ── 防呆（FORCE=true 可覆蓋）──
@@ -110,6 +121,10 @@ def main():
         for a in approvers if a.get("aad_id")
     ]
     mention_str = " ".join(f"<at>{a['name']}</at>" for a in approvers if a.get("aad_id"))
+    if channel == "chat":
+        entities    = []
+        mention_str = " ".join(f"<users/{a['google_chat_id']}>" for a in approvers
+                               if a.get("google_chat_id") and "FILL_IN" not in a["google_chat_id"])
 
     if deployment.get("type") == "hotfix":
         body = (
@@ -127,8 +142,8 @@ def main():
         title = f"🚀 PROD PR 簽核通知｜{display_name} {deploy_date}"
 
     try:
-        status = post_card(webhook_url, title, body, entities)
-        print(f"[{product_name}] 通知② 已發送：HTTP {status}")
+        status = post_card(webhook_url, title, body, entities, channel)
+        print(f"[{product_name}] 通知② 已發送（{channel}）：HTTP {status}")
     except Exception as e:
         print(f"[{product_name}] 通知② 發送失敗：{e}", file=sys.stderr)
         sys.exit(1)

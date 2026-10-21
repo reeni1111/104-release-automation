@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Send Teams signing notification (通知②)
+      - name: Send signing notification (通知②, Teams / Google Chat)
         env:
           NOTIFY_PRODUCT: ${{ github.event.inputs.product_name }}
           FORCE: ${{ github.event.inputs.force }}

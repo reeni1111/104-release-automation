@@ -19,6 +19,10 @@ PROD（上線日 −1 工作天起，每 10 分）：
        超過停損日（上線日 +1）仍失敗才終止（stopped_reason=manual）
     3. 安全停損：PROD 一直沒找齊且 today > 上線日 +1 日曆天 → 發 TPM 個人頻道告警
 
+通知管道：依條目 notify_channel（teams／chat；缺欄位視為 teams）選 Teams 或 Google Chat 的 webhook 與訊息格式
+（通知②：teams_product_channel_webhook_url／google_chat_product_webhook_url；
+ TPM 個人通知：tpm.teams_personal_webhook_url／tpm.google_chat_personal_webhook_url）。
+
 PR 搜集以「上線日 token（YYYYMMDD/YYMMDD）」比對 title + stg/prod + 已 merged，
 不依賴 head/base 分支名。支援多產品：設定讀自 config.json，狀態存於 state.json。
 維運搜集排除 title 含 hotfix 的 PR。
@@ -293,8 +297,11 @@ def update_web_api_field(issue_key: str, field_id: str, adf: dict) -> bool:
     return True
 
 
-# ── Teams Notifications ────────────────────────────────────────────────────────
-def _post_card(webhook_url: str, title: str, body: str, entities: list) -> bool:
+# ── Notifications（Teams／Google Chat）──────────────────────────────────────────
+def _post_card(webhook_url: str, title: str, body: str, entities: list, channel: str = "teams") -> bool:
+    if channel == "chat":
+        resp = requests.post(webhook_url, json={"text": f"*{title}*\n\n{body}"})
+        return resp.status_code in (200, 202)
     payload = {
         "type": "message",
         "attachments": [{
@@ -318,9 +325,11 @@ def _post_card(webhook_url: str, title: str, body: str, entities: list) -> bool:
 
 def send_signing_notification(product_name: str, deployment: dict, product_config: dict) -> bool:
     """轉「簽核中」成功 → 發 PROD PR 簽核通知至產品頻道（通知②），@mention 簽核人。"""
-    webhook_url = product_config.get("teams_product_channel_webhook_url", "")
+    channel     = deployment.get("notify_channel", "teams")
+    webhook_key = "google_chat_product_webhook_url" if channel == "chat" else "teams_product_channel_webhook_url"
+    webhook_url = product_config.get(webhook_key, "")
     if not webhook_url or "FILL_IN" in webhook_url:
-        print(f"  ⚠️  Teams product webhook not configured for {product_name}")
+        print(f"  ⚠️  {webhook_key} not configured for {product_name}")
         return False
 
     jira_url       = deployment["deploy_issue_url"]
@@ -340,6 +349,10 @@ def send_signing_notification(product_name: str, deployment: dict, product_confi
         for a in approvers if a.get("aad_id")
     ]
     mention_str = " ".join(f"<at>{a['name']}</at>" for a in approvers if a.get("aad_id"))
+    if channel == "chat":
+        entities    = []
+        mention_str = " ".join(f"<users/{a['google_chat_id']}>" for a in approvers
+                               if a.get("google_chat_id") and "FILL_IN" not in a["google_chat_id"])
 
     if deployment.get("type") == "hotfix":
         title = f"🚀 PROD PR 簽核通知｜{display_name} {deploy_date} hotfix"
@@ -356,20 +369,27 @@ def send_signing_notification(product_name: str, deployment: dict, product_confi
             f"- 上線單：{jira_url}\n- PR：\n" + "\n".join(pr_lines)
         )
 
-    ok = _post_card(webhook_url, title, body, entities)
+    ok = _post_card(webhook_url, title, body, entities, channel)
     if ok:
-        print(f"  ✅ Signing notification sent for {product_name}")
+        print(f"  ✅ Signing notification sent for {product_name} ({channel})")
     else:
-        print(f"  ❌ Teams signing notification failed")
+        print(f"  ❌ Signing notification failed ({channel})")
     return ok
+
+
+def _tpm_personal_target(deployment: dict):
+    """依條目 notify_channel 取 TPM 個人通知的 (channel, 設定欄位名, webhook URL)。"""
+    channel = deployment.get("notify_channel", "teams")
+    url_key = "google_chat_personal_webhook_url" if channel == "chat" else "teams_personal_webhook_url"
+    return channel, url_key, CONFIG.get("tpm", {}).get(url_key, "")
 
 
 def notify_manual_transition_needed(product_name: str, deployment: dict):
     """轉「簽核中」失敗（hotfix：PROD 已收齊、尚未轉「緊急簽核」），發純文字提醒至 TPM 個人聊天。
-    payload 格式：{"message": "..."}；Power Automate 運算式：triggerBody()?['message']"""
-    webhook_url = CONFIG.get("tpm", {}).get("teams_personal_webhook_url", "")
+    payload 格式：teams {"message": "..."}（Power Automate 運算式：triggerBody()?['message']）；chat {"text": "..."}"""
+    channel, url_key, webhook_url = _tpm_personal_target(deployment)
     if not webhook_url or "FILL_IN" in webhook_url:
-        print(f"  ⚠️  teams_personal_webhook_url 未設定，跳過人工轉單提醒")
+        print(f"  ⚠️  {url_key} 未設定，跳過人工轉單提醒")
         return
     issue_key = deployment["deploy_issue_key"]
     jira_url  = deployment["deploy_issue_url"]
@@ -385,18 +405,18 @@ def notify_manual_transition_needed(product_name: str, deployment: dict):
             f"{issue_key} 無法自動轉為「簽核中」，請手動操作。\n"
             f"上線單：{jira_url}"
         )
-    resp = requests.post(webhook_url, json={"message": message})
+    resp = requests.post(webhook_url, json={"text" if channel == "chat" else "message": message})
     if resp.status_code in (200, 202):
-        print(f"  ✅ 人工轉單提醒已發送")
+        print(f"  ✅ 人工轉單提醒已發送（{channel}）")
     else:
         print(f"  ❌ 人工轉單提醒失敗: HTTP {resp.status_code}")
 
 
 def notify_prod_timeout(product_name: str, deployment: dict):
     """安全停損：上線日+1 仍未蒐齊 PROD（hotfix：PROD 已收齊但仍未轉「緊急簽核」）→ 發告警至 TPM 個人聊天（僅個人頻道）。"""
-    webhook_url = CONFIG.get("tpm", {}).get("teams_personal_webhook_url", "")
+    channel, url_key, webhook_url = _tpm_personal_target(deployment)
     if not webhook_url or "FILL_IN" in webhook_url:
-        print(f"  ⚠️  teams_personal_webhook_url 未設定，跳過安全停損告警")
+        print(f"  ⚠️  {url_key} 未設定，跳過安全停損告警")
         return
     issue_key = deployment["deploy_issue_key"]
     jira_url  = deployment["deploy_issue_url"]
@@ -412,9 +432,9 @@ def notify_prod_timeout(product_name: str, deployment: dict):
             f"請人工確認 {issue_key}，並視情況手動轉「簽核中」。\n"
             f"上線單：{jira_url}"
         )
-    resp = requests.post(webhook_url, json={"message": message})
+    resp = requests.post(webhook_url, json={"text" if channel == "chat" else "message": message})
     if resp.status_code in (200, 202):
-        print(f"  ✅ 安全停損告警已發送")
+        print(f"  ✅ 安全停損告警已發送（{channel}）")
     else:
         print(f"  ❌ 安全停損告警失敗: HTTP {resp.status_code}")
 
@@ -432,6 +452,7 @@ def _activate_next_pending(deployment: dict, repos: list) -> bool:
         "deploy_issue_key":   nxt["deploy_issue_key"],
         "deploy_issue_url":   nxt["deploy_issue_url"],
         "epic_key":           nxt["epic_key"],
+        "notify_channel":     nxt.get("notify_channel", "teams"),
         "stg_prs":            {repo: [] for repo in repos},
         "prod_prs":           {repo: None for repo in repos},
         "stg_status_updated": False,
@@ -457,9 +478,10 @@ def _normalize_priority(deployment: dict, repos: list) -> bool:
     earliest = min(queue, key=lambda e: e["deploy_date"])
     if earliest["deploy_date"] >= deployment["deploy_date"]:
         return False  # 目前 active 已是最早，無需調整
-    # 建立舊 active 的 pending entry（5 個欄位）
+    # 建立舊 active 的 pending entry（6 個欄位，含 notify_channel）
     old_entry = {k: deployment[k] for k in
                  ("deploy_date", "stg_date", "deploy_issue_key", "deploy_issue_url", "epic_key")}
+    old_entry["notify_channel"] = deployment.get("notify_channel", "teams")
     # 新 pending_queue：移除被升格的條目，加入舊 active，按日期排序
     new_queue = [e for e in queue if e is not earliest] + [old_entry]
     new_queue.sort(key=lambda e: e["deploy_date"])
@@ -471,6 +493,7 @@ def _normalize_priority(deployment: dict, repos: list) -> bool:
         "deploy_issue_key":   earliest["deploy_issue_key"],
         "deploy_issue_url":   earliest["deploy_issue_url"],
         "epic_key":           earliest["epic_key"],
+        "notify_channel":     earliest.get("notify_channel", "teams"),
         "stg_prs":            {repo: [] for repo in repos},
         "prod_prs":           {repo: None for repo in repos},
         "stg_status_updated": False,
