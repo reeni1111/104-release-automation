@@ -36,11 +36,11 @@ git push -u origin main
    - `github.owner` / `github.repo`：**填你這個 repo**（skill 靠這個找 repo）。
    - `jira.cloud_id` / `jira.base_url`；`tpm`（`name` / `jira_account_id` / `email` / `teams_personal_webhook_url` / `google_chat_personal_webhook_url`，TPM 個人相關資訊集中於此）；`default_notify_channel`（指令未加 `teams`／`chat` 時的預設通知管道）。
    - `products.{觸發關鍵字}`：依操作手冊第七章，用一張現行上線單＋Epic 帶出 Jira 欄位，再填 `hosting`（`aws` 雲端／`k8s` 地端）、repos、Teams／Google Chat webhook、工程師/簽核人 AAD ID 與 Google Chat ID（操作手冊 6.4.5）。**地端（k8s）產品**另填 `k8s_subtickets`（repo → ArgoCD app 名稱）；**雲端（aws）產品請移除 `k8s_subtickets`**。`jira_system_level` 為系統等級選項 id（全站固定共用，現值 `13204` = 1-2，沿用即可）。（選填）`jira_deploy_summary_template`：自訂上線單標題樣板（tokens：`{deploy_date}`、`{deploy_M_D}`、`{display_name}`）；未設用預設「{display_name} - {deploy_M_D} 維運上線」。
-7. 完成後即可在 Cowork 用 skill：輸入「YYYY/MM/DD 產品名」開始上線（結尾可加 `teams`／`chat` 指定本張單通知管道）；hotfix 輸入「{YYYYMMDD} {產品名} hotfix」（僅雲端產品，與維運流程獨立追蹤；詳見 SKILL.md「Hotfix 流程」）。
+7. 完成後即可在 Cowork 用 skill：輸入「YYYY/MM/DD 產品名」開始上線（結尾可加 `teams`／`chat` 指定本張單通知管道）；hotfix 輸入「{YYYYMMDD} {產品名} hotfix」（僅雲端產品，與維運流程獨立追蹤；詳見 SKILL.md「Hotfix 流程」）；二次上線輸入「{上線單連結}」（沿用已上線的上線單，限原上線日當天或隔日；詳見 SKILL.md「二次上線流程」）。
 
 ## 前提
 
 - 上線單所在的 Jira 專案 workflow 需具備「已更新Staging」「申請上線（→簽核中）」等轉換（程式依**目的地狀態**尋找 transition，不綁名稱/id）。
 - `GH_PAT` 需能讀取所有列在 `repos` 的產品 repo。
-- 各產品工程師的 STG/PROD PR，title 需含「上線日期（YYYYMMDD 或 YYMMDD）」與 `stg`/`[stg]` 或 `prod`/`[prod]`（不分大小寫）；STG PR 須**已 merged**，PROD PR 為 **open**（簽核在 merge 之前）。hotfix PR title 另須含 `hotfix`（不分大小寫），hotfix PROD PR 為 open 或已 merged；維運 PR title 不得含 `hotfix`。
+- 各產品工程師的 STG/PROD PR，title 需含「上線日期（YYYYMMDD 或 YYMMDD）」與 `stg`/`[stg]` 或 `prod`/`[prod]`（不分大小寫）；STG PR 須**已 merged**，PROD PR 為 **open**（簽核在 merge 之前）。hotfix PR title 另須含 `hotfix`（不分大小寫），hotfix PROD PR 為 open 或已 merged；維運 PR title 不得含 `hotfix`。二次上線 PR title 的日期可為原上線日或提供日（第一次上線已列的 PR 會自動排除）。
 - hotfix 的「緊急簽核」由 TPM 手動觸發「緊急上線」轉換；程式不轉 hotfix 單狀態，只讀狀態判斷是否發通知②。
