@@ -34,6 +34,12 @@ Hotfix（state.json 條目 type=hotfix，key「{產品名} hotfix {YYYYMMDD}」�
     上線單到「緊急簽核」或之後且 PROD 收齊 → 發通知②（signed）
     上線單「結案」／「取消申請」→ 結束追蹤
     停損（today > hotfix 日 +1）：PROD 已收齊但未轉緊急簽核 → TPM 個人通知；未收齊 → 不通知；皆停止追蹤（timeout）
+
+二次上線（維運條目帶 reentry；沿用已上線的上線單，排入 pending_queue 由優先序自動升格）：
+    搜集以提供日（deploy_date）與原上線日（reentry.original_deploy_date）兩個日期 token，排除第一次上線已列的 PR
+    Web/API 程式資訊：首次處理時保存欄位原內容（reentry.base_content），之後每次寫入＝原內容＋「---{M/D} 二次上線---」＋本次 PR；
+    寫入前比對欄位開頭與原內容，不一致即不寫入並發 TPM 個人通知（僅一次）
+    STG／簽核中轉單、通知③、停損沿用維運流程；通知②標題為「{顯示名稱} {提供日} 二次上線」；不發通知①
 """
 
 import base64
@@ -297,6 +303,116 @@ def update_web_api_field(issue_key: str, field_id: str, adf: dict) -> bool:
     return True
 
 
+# ── 二次上線（reentry）：Web/API 程式資訊欄位保存與追加 ──────────────────────────
+GITHUB_PR_URL_PATTERN = r"https://github\.com/[^\s/]+/[^\s/]+/pull/\d+"
+
+
+def reentry_separator_text(deploy_date_str: str) -> str:
+    """分隔線文字：「---{提供日 M/D} 二次上線---」。"""
+    return f"---{int(deploy_date_str[4:6])}/{int(deploy_date_str[6:8])} 二次上線---"
+
+
+def get_web_api_field(issue_key: str, field_id: str):
+    """讀取 Web/API 程式資訊欄位（ADF）。回傳 (是否成功, content 陣列)；欄位為空回 (True, [])。"""
+    resp = requests.get(
+        f"{JIRA_BASE}/issue/{issue_key}?fields={field_id}",
+        headers=jira_headers(),
+    )
+    if resp.status_code != 200:
+        print(f"  ⚠️  讀取 {issue_key} Web/API 程式資訊失敗: HTTP {resp.status_code}")
+        return False, []
+    value = resp.json().get("fields", {}).get(field_id)
+    if not value:
+        return True, []
+    if not isinstance(value, dict):
+        print(f"  ⚠️  {issue_key} Web/API 程式資訊不是 ADF 格式，無法保存原內容")
+        return False, []
+    return True, value.get("content", [])
+
+
+def _adf_projection(nodes) -> list:
+    """比對用：只取節點類型、文字、連結網址（忽略 Jira 自動附加的 localId 等屬性）。"""
+    out = []
+    for n in nodes or []:
+        if not isinstance(n, dict):
+            continue
+        hrefs = [m.get("attrs", {}).get("href") for m in (n.get("marks") or [])
+                 if isinstance(m, dict) and m.get("type") == "link"]
+        out.append([n.get("type"), n.get("text"), (n.get("attrs") or {}).get("url"),
+                    hrefs, _adf_projection(n.get("content"))])
+    return out
+
+
+def _adf_text(node: dict) -> str:
+    if node.get("type") == "text":
+        return node.get("text", "")
+    return "".join(_adf_text(c) for c in (node.get("content") or []) if isinstance(c, dict))
+
+
+def extract_pr_urls(nodes) -> list:
+    """取出原內容中所有 GitHub PR 網址（文字、連結、inlineCard 皆取）。"""
+    found = []
+
+    def walk(ns):
+        for n in ns or []:
+            if not isinstance(n, dict):
+                continue
+            texts = [n.get("text") or "", (n.get("attrs") or {}).get("url") or ""]
+            texts += [(m.get("attrs") or {}).get("href") or "" for m in (n.get("marks") or [])
+                      if isinstance(m, dict)]
+            for s in texts:
+                for u in re.findall(GITHUB_PR_URL_PATTERN, s):
+                    if u not in found:
+                        found.append(u)
+            walk(n.get("content"))
+
+    walk(nodes)
+    return found
+
+
+def capture_reentry_base(deployment: dict, field_id: str) -> bool:
+    """二次上線首次處理：保存欄位原內容（第一次上線 PR，稽核來源）與其中的 PR 網址。"""
+    ok, nodes = get_web_api_field(deployment["deploy_issue_key"], field_id)
+    if not ok:
+        return False
+    deployment["reentry"]["base_content"] = nodes
+    deployment["reentry"]["exclude_urls"] = extract_pr_urls(nodes)
+    print(f"  📌 已保存原內容（{len(nodes)} 個區塊；排除第一次上線 PR {len(deployment['reentry']['exclude_urls'])} 筆）")
+    return True
+
+
+def build_reentry_adf(deployment: dict, repo_display_names: dict) -> dict:
+    """二次上線欄位內容＝原內容（原樣）＋分隔線＋本次 PR（格式同 build_web_api_adf）。
+    原內容最後一個區塊已是同一行分隔線時不重複加。"""
+    base = deployment["reentry"]["base_content"]
+    sep  = reentry_separator_text(deployment["deploy_date"])
+    content = list(base)
+    if not (base and isinstance(base[-1], dict) and _adf_text(base[-1]).strip() == sep):
+        content.append({"type": "paragraph", "content": [{"type": "text", "text": sep}]})
+    content.extend(build_web_api_adf(deployment["stg_prs"], deployment["prod_prs"],
+                                     repo_display_names)["content"])
+    return {"version": 1, "type": "doc", "content": content}
+
+
+def update_reentry_field(product_name: str, deployment: dict, field_id: str,
+                         repo_display_names: dict) -> bool:
+    """二次上線寫入：先比對欄位開頭與保存的原內容，一致才寫入；
+    不一致不寫入，發 TPM 個人通知（僅一次），下一輪再比對。"""
+    reentry = deployment["reentry"]
+    ok, current = get_web_api_field(deployment["deploy_issue_key"], field_id)
+    if not ok:
+        return False
+    base = reentry["base_content"]
+    if _adf_projection(current[:len(base)]) != _adf_projection(base):
+        print("  ❌ 欄位開頭與保存的原內容不一致，暫停寫入（不覆蓋第一次上線內容）")
+        if not reentry.get("guard_notice_sent"):
+            notify_reentry_guard(product_name, deployment)
+            reentry["guard_notice_sent"] = True
+        return False
+    return update_web_api_field(deployment["deploy_issue_key"], field_id,
+                                build_reentry_adf(deployment, repo_display_names))
+
+
 # ── Notifications（Teams／Google Chat）──────────────────────────────────────────
 def _post_card(webhook_url: str, title: str, body: str, entities: list, channel: str = "teams") -> bool:
     if channel == "chat":
@@ -363,6 +479,8 @@ def send_signing_notification(product_name: str, deployment: dict, product_confi
         )
     else:
         title = f"🚀 PROD PR 簽核通知｜{display_name} {deploy_date}"
+        if deployment.get("reentry"):
+            title += " 二次上線"
         body = (
             f"{mention_str} Hi all，{display_name}本次上線所有 PROD PR 已就緒，"
             f"請抽空簽核上線單與 PR，感謝\n\n"
@@ -439,6 +557,35 @@ def notify_prod_timeout(product_name: str, deployment: dict):
         print(f"  ❌ 安全停損告警失敗: HTTP {resp.status_code}")
 
 
+def notify_reentry_guard(product_name: str, deployment: dict, unreadable: bool = False):
+    """二次上線 TPM 個人通知：
+    unreadable=False：欄位開頭與保存的原內容不一致，已暫停寫入（繼續追蹤）
+    unreadable=True ：至提供日 +1 仍讀不到欄位原內容，已停止追蹤（未寫入任何內容）"""
+    channel, url_key, webhook_url = _tpm_personal_target(deployment)
+    if not webhook_url or "FILL_IN" in webhook_url:
+        print(f"  ⚠️  {url_key} 未設定，跳過二次上線 TPM 個人通知")
+        return
+    issue_key = deployment["deploy_issue_key"]
+    jira_url  = deployment["deploy_issue_url"]
+    if unreadable:
+        message = (
+            f"⚠️ {product_name}：二次上線讀不到 Web/API 程式資訊原內容，已停止自動追蹤。\n"
+            f"{issue_key} 至提供日 +1 仍無法讀取第一次上線內容，程式未寫入任何內容，請人工確認。\n"
+            f"上線單：{jira_url}"
+        )
+    else:
+        message = (
+            f"⚠️ {product_name}：二次上線 Web/API 程式資訊欄位與原內容不一致，已暫停寫入。\n"
+            f"{issue_key} 第一次上線內容與系統保存版本不同，請人工確認。\n"
+            f"上線單：{jira_url}"
+        )
+    resp = requests.post(webhook_url, json={"text" if channel == "chat" else "message": message})
+    if resp.status_code in (200, 202):
+        print(f"  ✅ 二次上線 TPM 個人通知已發送（{channel}）")
+    else:
+        print(f"  ❌ 二次上線 TPM 個人通知失敗: HTTP {resp.status_code}")
+
+
 def _activate_next_pending(deployment: dict, repos: list) -> bool:
     """active 條目簽核完成後，從 pending_queue 啟用下一筆部署。"""
     queue = deployment.get("pending_queue", [])
@@ -462,6 +609,10 @@ def _activate_next_pending(deployment: dict, repos: list) -> bool:
     })
     deployment.pop("manual_notice_sent", None)
     deployment.pop("stopped_reason", None)
+    if "reentry" in nxt:        # 二次上線資料隨條目搬移；一般條目不得殘留
+        deployment["reentry"] = nxt["reentry"]
+    else:
+        deployment.pop("reentry", None)
     print(f"  🔄 Activated next pending: {nxt['deploy_issue_key']} ({nxt['deploy_date']})")
     return True
 
@@ -482,6 +633,8 @@ def _normalize_priority(deployment: dict, repos: list) -> bool:
     old_entry = {k: deployment[k] for k in
                  ("deploy_date", "stg_date", "deploy_issue_key", "deploy_issue_url", "epic_key")}
     old_entry["notify_channel"] = deployment.get("notify_channel", "teams")
+    if "reentry" in deployment:     # 二次上線資料隨條目搬移
+        old_entry["reentry"] = deployment["reentry"]
     # 新 pending_queue：移除被升格的條目，加入舊 active，按日期排序
     new_queue = [e for e in queue if e is not earliest] + [old_entry]
     new_queue.sort(key=lambda e: e["deploy_date"])
@@ -503,6 +656,10 @@ def _normalize_priority(deployment: dict, repos: list) -> bool:
     })
     deployment.pop("manual_notice_sent", None)
     deployment.pop("stopped_reason", None)
+    if "reentry" in earliest:       # 二次上線資料隨條目搬移；一般條目不得殘留
+        deployment["reentry"] = earliest["reentry"]
+    else:
+        deployment.pop("reentry", None)
     return True
 
 
@@ -663,13 +820,38 @@ def main():
             prod_start      = subtract_working_days(deploy_date, 1)
             prod_cutoff     = deploy_date + timedelta(days=1)
 
+        # 二次上線：原上線日 token 一併搜集（提供日＝原上線日當天或隔天）
+        reentry = deployment.get("reentry")
+        if reentry:
+            for tok in deploy_date_tokens(reentry["original_deploy_date"]):
+                if tok not in tokens:
+                    tokens.append(tok)
+
         print(f"\n{'='*55}")
-        print(f"📦 {product_name} | deploy={deploy_date_str} | today={today} | {issue_key}")
+        print(f"📦 {product_name} | deploy={deploy_date_str} | today={today} | {issue_key}"
+              + (f" | 二次上線（原上線日 {reentry['original_deploy_date']}）" if reentry else ""))
         print(f"   STG 起算={stg_start} | PROD 起算={prod_start} | 停損={prod_cutoff} | tokens={tokens}")
 
         if today < stg_start:
             print("  ⏳ 未到 STG 窗口，跳過")
             continue
+
+        # 二次上線：首次處理先保存欄位原內容；保存失敗本輪不做任何事，下輪重試
+        if reentry and "base_content" not in reentry:
+            if not capture_reentry_base(deployment, field_id):
+                if today > prod_cutoff:     # 停損日仍無法保存 → 比照安全停損收尾，避免佔住追蹤位置
+                    print("  ⏰ 提供日 +1 仍讀不到原內容 → 停止追蹤（未寫入任何內容），個人頻道通知，接回下一張")
+                    notify_reentry_guard(product_name, deployment, unreadable=True)
+                    deployment["status"] = "completed"
+                    deployment["stopped_reason"] = "timeout"
+                    state_changed = True
+                    if _activate_next_pending(deployment, repos):
+                        state_changed = True
+                else:
+                    print("  ⚠️  原內容保存失敗，本輪略過，下輪重試")
+                continue
+            state_changed = True
+        exclude_urls = set(reentry.get("exclude_urls", [])) if reentry else set()
 
         # ── STG 窗口 ──
         print("🔍 STG: collecting...")
@@ -679,7 +861,8 @@ def main():
             existing = set(deployment["stg_prs"].get(repo, []))
             prs      = search_merged_prs_by_title(repo, tokens)
             stg      = exclude_hotfix(filter_by_title(prs, STG_PATTERN))
-            new_urls = [pr["html_url"] for pr in stg if pr["html_url"] not in existing]
+            new_urls = [pr["html_url"] for pr in stg
+                        if pr["html_url"] not in existing and pr["html_url"] not in exclude_urls]
             if new_urls:
                 deployment["stg_prs"][repo] = list(existing) + new_urls
                 any_new = True
@@ -690,8 +873,15 @@ def main():
 
         if any_new:
             state_changed = True
-            adf = build_web_api_adf(deployment["stg_prs"], deployment["prod_prs"], repo_names)
-            update_web_api_field(issue_key, field_id, adf)
+            if reentry:
+                reentry["field_pending"] = True
+            else:
+                adf = build_web_api_adf(deployment["stg_prs"], deployment["prod_prs"], repo_names)
+                update_web_api_field(issue_key, field_id, adf)
+        if reentry and reentry.get("field_pending"):
+            if update_reentry_field(product_name, deployment, field_id, repo_names):
+                reentry.pop("field_pending")
+            state_changed = True
 
         # STG 轉單：每次排程都重試（不綁 any_new），只要已有 STG PR 且尚未轉過即嘗試，
         # 避免「首次轉單失敗後、因無新 PR 而永遠不再重試」而卡住。
@@ -719,7 +909,8 @@ def main():
                     print(f"  ✅ PROD {display}: already collected")
                     continue
                 prs  = search_merged_prs_by_title(repo, tokens, "open")  # PROD 抓 open：簽核在 merge 之前
-                prod = exclude_hotfix(filter_by_title(prs, PROD_PATTERN))
+                prod = [pr for pr in exclude_hotfix(filter_by_title(prs, PROD_PATTERN))
+                        if pr["html_url"] not in exclude_urls]
                 if prod:
                     deployment["prod_prs"][repo] = prod[0]["html_url"]
                     any_new = True
@@ -729,8 +920,15 @@ def main():
 
             if any_new:
                 state_changed = True
-                adf = build_web_api_adf(deployment["stg_prs"], deployment["prod_prs"], repo_names)
-                update_web_api_field(issue_key, field_id, adf)
+                if reentry:
+                    reentry["field_pending"] = True
+                else:
+                    adf = build_web_api_adf(deployment["stg_prs"], deployment["prod_prs"], repo_names)
+                    update_web_api_field(issue_key, field_id, adf)
+            if reentry and reentry.get("field_pending"):
+                if update_reentry_field(product_name, deployment, field_id, repo_names):
+                    reentry.pop("field_pending")
+                state_changed = True
 
             # 收齊範圍 = 有 STG merged PR 的 repo；無 STG PR 的 repo 不在本次修正範圍，不等其 PROD PR
             scoped_repos = [r for r in repos if deployment["stg_prs"].get(r)]

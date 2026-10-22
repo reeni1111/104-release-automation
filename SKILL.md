@@ -6,6 +6,7 @@ description: >
   「YYYY/MM/DD 產品名 k8s」（地端，如「2026/7/16 CMS k8s」）、
   「幫我建上線單」、「開始上線流程」、「新增 {產品} 上線」、「建立上線單」等意圖時立即觸發。
   「{YYYYMMDD} {產品名} hotfix」（如「20261021 農場 hotfix」）觸發 Hotfix 流程（建 hotfix 單＋Epic、更新 state.json 並開 PR；與維運流程完全獨立）。
+  「{上線單連結}」（如「https://{your-site}.atlassian.net/browse/{YOUR_PROJECT}-XXXX chat」）觸發二次上線流程（沿用已上線的上線單排入 pending_queue；不建新單，更新 state.json 並開 PR）。
   任一指令結尾可再加「teams」或「chat」指定本張單的通知管道（如「2026/11/30 Pool chat」）；未加時用 config.json 的 default_notify_channel。
   執行（Claude 手動 Steps 1–5）：Jira 上線單建立 → Epic 建立 → 相互連結 → 日期設定 →（地端另建 K8s 上線子單）→ 更新 GitHub state.json 並開 PR。
   PR merge 至 main 後 GitHub Actions 自動接手：發上線通知① → Steps 7–8（PR 搜集、狀態轉換與簽核通知）。
@@ -51,11 +52,13 @@ description: >
 
 > Hotfix（`{YYYYMMDD} {產品名} hotfix`）為獨立流程，見「Hotfix 流程」節。
 
+> 二次上線（`{上線單連結}`）沿用已上線的上線單重跑維運流程，見「二次上線流程」節。
+
 ## 通知情境說明
 
 | # | 通知名稱 | 觸發時機 | 發送對象 | 目的地 | webhook 欄位（teams／chat，依該單 `notify_channel`） |
 |---|---------|---------|---------|------|-------------|
-| 1 | 上線準備通知 | `deploy_date` 變動 push 至 main | `talent_engineering_members` | 上線作業頻道 | `teams_deploy_channel_webhook_url`／`google_chat_deploy_webhook_url` |
+| 1 | 上線準備通知 | `deploy_date` 變動 push 至 main（二次上線不發） | `talent_engineering_members` | 上線作業頻道 | `teams_deploy_channel_webhook_url`／`google_chat_deploy_webhook_url` |
 | 2 | PROD PR 簽核通知 | 有 STG PR 的 repo 之 PROD PR 全找齊、轉「簽核中」成功 | `approvers` | 產品頻道 | `teams_product_channel_webhook_url`／`google_chat_product_webhook_url` |
 | 3 | 人工轉單提醒 | PROD PR 找齊但自動轉「簽核中」失敗（僅首次失敗發送；重試至上線日 +1 仍失敗再發一次並終止） | TPM 個人聊天 | 個人聊天（Teams：Power Automate／Chat：TPM 個人通知聊天室） | `tpm.teams_personal_webhook_url`／`tpm.google_chat_personal_webhook_url` |
 | 4 | 安全停損告警 | 上線日 +1 仍未蒐齊 PROD PR | TPM 個人聊天 | 個人聊天（Teams：Power Automate／Chat：TPM 個人通知聊天室） | `tpm.teams_personal_webhook_url`／`tpm.google_chat_personal_webhook_url` |
@@ -63,6 +66,8 @@ description: >
 > STG PR 找到時**不發通知**，只更新 Jira Web/API 程式資訊欄位並推進到「STAGING測試中」狀態（依目的地狀態轉單；當次未成功則每 10 分排程持續重試直到成功）。
 
 > Hotfix 版通知①②與 TPM 個人通知文案見「Hotfix 流程」節。
+
+> 二次上線：不發通知①；通知②標題改為「{display_name} {提供日} 二次上線」；Web/API 程式資訊欄位與原內容不一致時另發 TPM 個人通知，見「二次上線流程」節。
 
 > **通知管道（`notify_channel`）**：每張單（維運、hotfix、`pending_queue` 條目）各自記錄 `teams` 或 `chat`，該單的通知①②與 TPM 個人通知一律發到同一個通訊軟體；條目缺此欄位時視為 `teams` [AI 補充]。Google Chat 以文字訊息發送：payload `{"text": "..."}`，標題以 `*粗體*` 呈現，@mention 寫法 `<users/{google_chat_id}>`。
 
@@ -116,6 +121,7 @@ mcp__github__get_file_contents(owner="{owner}", repo="{repo}", path="config.json
 | 地端（K8s） | `2026/7/16 CMS k8s` | `k8s` | Steps 1–4 →**Step 4.5 建主站 K8s 子單**→ Step 5 |
 | 地端＋DR（K8s） | `2026/7/16 Program k8s dr` | `k8s` | 同地端，Step 4.5 建**主站＋DR 站**子單（每 repo 各一張，3+3） |
 | Hotfix | `20261021 農場 hotfix` | `aws` | 改走「Hotfix 流程」節（H1–H5），不走本節以下 Steps 1–5 |
+| 二次上線 | `https://{your-site}.atlassian.net/browse/{YOUR_PROJECT}-XXXX` | `aws`／`k8s` | 改走「二次上線流程」節（R1–R3），不走本節以下 Steps 1–5；不建 K8s 子單 |
 
 > **通知管道**：上列任一指令結尾可再加 `teams` 或 `chat`（不分大小寫），如 `2026/11/30 Pool chat`、`2026/7/16 CMS k8s chat`、`2026/7/16 Program k8s dr chat`、`20261021 農場 hotfix chat`；未加時取 `CONFIG.default_notify_channel`。
 
@@ -128,6 +134,8 @@ mcp__github__get_file_contents(owner="{owner}", repo="{repo}", path="config.json
    - `mode = "k8s"` 但 `hosting = "aws"`：此產品為雲端託管，無需 K8s 子單，請改用「`{日期} {產品名}`」。（帶 `dr` 但 hosting=aws 同樣適用此條，一律擋下）
    - `mode = "aws"` 但 `hosting = "k8s"`：此產品為地端託管，需一併建 K8s 子單，請改用「`{日期} {產品名} k8s`」。
    - 相符 → 繼續執行。
+
+> 指令本體為上線單連結（二次上線）時，只做第 0 步（通知管道），不做 1–3 的 k8s／hosting 判斷，改走「二次上線流程」節。
 
 ### 解析使用者輸入
 
@@ -407,7 +415,7 @@ def build_k8s_specs(product_config, sites=("primary",)):
 
 Step 5 更新 state.json 並開 PR；PR **merge 至 main** 後（`deploy_date` 有變動），觸發 `.github/workflows/notify-deploy.yml`（push 事件，paths: state.json）。
 
-`scripts/notify_deploy.py` 比對前後兩個 commit 的 state.json，偵測 `deploy_date` 有變動的產品，對每個變動產品依該條目 `notify_channel` 呼叫 `product_config.teams_deploy_channel_webhook_url`（Adaptive Card）或 `product_config.google_chat_deploy_webhook_url`（文字訊息）送出通知。
+`scripts/notify_deploy.py` 比對前後兩個 commit 的 state.json，偵測 `deploy_date` 有變動的產品（二次上線條目除外），對每個變動產品依該條目 `notify_channel` 呼叫 `product_config.teams_deploy_channel_webhook_url`（Adaptive Card）或 `product_config.google_chat_deploy_webhook_url`（文字訊息）送出通知。
 
 ### 前提確認（執行 Step 5 前檢查）
 
@@ -463,7 +471,7 @@ mcp__github__get_file_contents(owner="{CONFIG.github.owner}", repo="{CONFIG.gith
 }
 ```
 
-> **同產品已有 active 條目時（第二張以上上線單）**：不覆蓋現有條目；改在該條目的 `pending_queue` 陣列新增一筆，僅含 6 欄位（`deploy_date`、`stg_date`、`deploy_issue_key`、`deploy_issue_url`、`epic_key`、`notify_channel`）。待前張單轉「簽核中」成功，`collect_prs.py` 自動啟用下一筆。
+> **同產品已有 active 條目時（第二張以上上線單）**：不覆蓋現有條目；改在該條目的 `pending_queue` 陣列新增一筆，僅含 6 欄位（`deploy_date`、`stg_date`、`deploy_issue_key`、`deploy_issue_url`、`epic_key`、`notify_channel`）。待前張單轉「簽核中」成功，`collect_prs.py` 自動啟用下一筆。二次上線條目另帶 `reentry`（見「二次上線流程」R3）。
 
 ### 推送更新（推分支，不直接 push main）
 
@@ -660,6 +668,105 @@ hotfix 單：{jira_url}
 ──（以下自動階段，Claude 不執行）──
 ℹ️  PR merge 至 main 後自動發 hotfix 版通知①，並開始每 10 分搜集 hotfix STG／PROD PR
 ℹ️  「緊急上線」轉換（→ 緊急簽核）請 TPM 手動觸發，並填處級主管、緊急上線原因
+```
+
+---
+
+## 二次上線流程（指令：`{上線單連結}`）
+
+> 範例：`https://{your-site}.atlassian.net/browse/{YOUR_PROJECT}-XXXX chat`。沿用**已上線**的上線單與 Epic 重跑維運流程：不建新單、不建 Epic、不建 K8s 子單、不改上線單任何欄位（唯一例外：Web/API 程式資訊欄位追加本次 PR）。
+> 提供日＝收到指令當天（台灣時間）；上線單只能於原上線日當天與隔日沿用。
+> 共用不重寫：讀 config.json、通知管道判斷（指令結尾 `teams`／`chat`）、推分支＋開 PR、§0 強制規範，一律沿用維運流程；以下只列差異。
+
+### R1 讀取上線單
+
+工具：`getJiraIssue`，取 `summary`、`customfield_11222`（排定上線日期）、`status`、`issuelinks`。
+
+- 產品：以各產品上線單標題規則比對 `summary`（有 `jira_deploy_summary_template` 用樣板，否則 `{display_name} - {deploy_M_D} 維運上線`），須恰好對到一個產品
+- 原上線日（`original_deploy_date`）：`customfield_11222` 的日期部分（YYYYMMDD）
+- Epic：`issuelinks` 中 Depends(WBSGantt) 的 inwardIssue，類型「大型工作」且標題為「{原上線日 YYYYMMDD} 上線」，須恰好一張
+
+### R2 檢查（任一不符即停止並回報，不做任何異動）
+
+- 提供日須為原上線日當天或隔日（日曆天）
+- `summary` 不含 `hotfix`（不分大小寫）[AI 補充]
+- state.json 中沒有同一 `deploy_issue_key` 的 active 條目或 `pending_queue` 條目
+- 同產品沒有 `deploy_date` 等於提供日的 active 條目或 `pending_queue` 條目 [AI 補充：同日時優先序不會升格、通知程式會當成換位，且會收到另一張單的 PR]
+
+### R3 更新 state.json 並開 PR
+
+- 同產品已有 active 條目 → 在其 `pending_queue` 新增一筆（6 欄位＋`reentry`），由排程依優先序自動升格：
+
+```json
+{
+  "deploy_date": "{提供日 YYYYMMDD}",
+  "stg_date": "{提供日 YYYYMMDD}",
+  "deploy_issue_key": "{上線單號}",
+  "deploy_issue_url": "https://{your-site}.atlassian.net/browse/{上線單號}",
+  "epic_key": "{epic_key}",
+  "notify_channel": "{notify_channel}",
+  "reentry": {"original_deploy_date": "{原上線日 YYYYMMDD}"}
+}
+```
+
+- 同產品沒有 active 條目（不存在或已 completed）→ 以 Step 5 條目格式覆寫，`deploy_date`／`stg_date` 皆為提供日，另帶同上 `reentry`
+- 分支：`chore/activate-{product_name}-reentry-{提供日 YYYYMMDD}`
+- commit／PR title：`chore: activate {product_name} reentry {提供日 YYYYMMDD}`
+- merge 時不需加 `[skip ci]`（程式不發二次上線通知①）
+
+### 自動階段（GitHub Actions；Claude 不執行）
+
+1. **通知①**：不發（push 與手動補發皆不發）
+2. **保存原內容**（首次處理）：讀取上線單 Web/API 程式資訊欄位（`customfield_12324`）原內容存入 `reentry.base_content`，其中 PR 網址存入 `reentry.exclude_urls`；讀不到（Jira 回應錯誤，或欄位不是 Jira 原生格式）時該輪不做任何事、下輪重試；至提供日 +1 仍讀不到即停止追蹤（未寫入任何內容）、發 TPM 個人通知，並接回 `pending_queue` 下一張 [AI 補充]
+3. **PR 搜集**：條件同維運（STG 已 merged、PROD open、排除 title 含 hotfix），日期 token 為提供日與原上線日；排除 `exclude_urls`（第一次上線的 PR）
+4. **Web/API 程式資訊**：每次寫入＝原內容（原樣）＋分隔線＋本次 PR（格式同維運）；原內容最後一段已是同一行分隔線時不重複加
+
+   ```
+   {第一次上線內容，一字不動}
+   ---{提供日 M/D} 二次上線---
+   [STG PR]
+   • {repo 短標籤}：{本次 STG PR}
+
+   [PROD PR]
+   • {repo 短標籤}：{本次 PROD PR}
+   ```
+
+   - 寫入前重新讀取欄位，比對開頭與原內容（只比內容與結構，不比 Jira 自動附加的內部屬性 [AI 補充]）；不一致即不寫入，發 TPM 個人通知（僅一次），下輪再比對，一致後補寫
+   - Jira 變更歷程保留每次修改前後的全文
+5. **STG 轉單、轉「簽核中」、通知③、安全停損**：沿用維運流程（以提供日計算）
+6. **通知②**：標題「🚀 PROD PR 簽核通知｜{display_name} {提供日 YYYYMMDD} 二次上線」，內文與維運相同，PR 只列本次 PROD PR
+7. **結束**：簽核完成（或終止）後，`collect_prs.py` 自動啟用 `pending_queue` 下一筆；一般條目不帶 `reentry`
+
+**TPM 個人通知**（2 種情境，各發一次）[AI 補充]：
+
+情境 1：欄位與原內容不一致（暫停寫入，繼續追蹤）
+```
+⚠️ {product_name}：二次上線 Web/API 程式資訊欄位與原內容不一致，已暫停寫入。
+{issue_key} 第一次上線內容與系統保存版本不同，請人工確認。
+上線單：{jira_url}
+```
+
+情境 2：至提供日 +1 仍讀不到原內容（停止追蹤）
+```
+⚠️ {product_name}：二次上線讀不到 Web/API 程式資訊原內容，已停止自動追蹤。
+{issue_key} 至提供日 +1 仍無法讀取第一次上線內容，程式未寫入任何內容，請人工確認。
+上線單：{jira_url}
+```
+
+> 現行限制：二次上線追蹤期間，同產品原追蹤中的單退回 `pending_queue`，此期間不搜集其 PR（已收集的 PR 自 state.json 清空，Jira 欄位已寫入內容不受影響），二次上線結束後重新搜集。
+> 隔日再次執行（第三次上線）時，分隔線文字同為「二次上線」。
+
+### 完成回報格式（二次上線）
+
+```
+✅ R1  上線單：{deploy_issue_key}（{product_name}，原上線日 {原上線日}）
+       Epic：{epic_key}
+✅ R2  檢查通過（提供日 {提供日}）
+✅ R3  state.json 已更新並開 PR：{pr_url}
+       （排入 pending_queue／直接追蹤；通知管道：Teams／Google Chat）
+
+──（以下自動階段，Claude 不執行）──
+ℹ️  不發通知①；排程依提供日搜集 PR，追加至 Web/API 程式資訊欄位第一次上線內容下方
 ```
 
 ---
@@ -863,6 +970,7 @@ hotfix 單：{jira_url}
 |------|------|------|
 | 上線部署 | `chore/activate-{產品}-{日期}` | `chore/activate-農場-20260716` |
 | hotfix | `chore/activate-{產品}-hotfix-{日期}` | `chore/activate-農場-hotfix-20261021` |
+| 二次上線 | `chore/activate-{產品}-reentry-{提供日}` | `chore/activate-農場-reentry-20261022` |
 | 設定更新 | `config/簡述` | `config/update-aad-ids` |
 | 修 bug | `fix/簡述` | `fix/notify-deploy-logic` |
 | 新功能 | `feat/簡述` | `feat/add-product-b` |
@@ -1163,6 +1271,7 @@ AUTH=(-u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Content-Type: application/json")
 - 搜尋來源：用 GitHub Search API 對各 repo 搜 title 含上線日期 token（`YYYYMMDD` 與 `YYMMDD`）且 `is:merged` 的 PR（不依賴 head/base 分支名稱）
 - 篩選條件：PR title 符合 `(?i)(\bstg\b|\[stg\])` 正則，並排除 title 含 `hotfix`（不分大小寫）者
 - 每個 repo 可有多筆 STG PR，全部收集
+- 二次上線條目：日期 token 另加原上線日，並排除第一次上線的 PR（見「二次上線流程」）
 
 #### 自動動作
 1. 有新 STG PR → 更新 Jira `customfield_12324`（Web/API 程式資訊）
@@ -1191,6 +1300,8 @@ AUTH=(-u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Content-Type: application/json")
 
 > 單筆 → URL 同一清單項目；多筆 → 名稱一個項目、URL 為巢狀子項目。清單為 Jira 原生 bullet list（ADF bulletList），縮排不會因 wiki 樣式流失。
 
+> 二次上線條目：分隔線以上為第一次上線內容（原樣，不重畫），以下為本次 PR，見「二次上線流程」。
+
 ---
 
 ### Step 8：PROD PR 搜集（上線日 −1 工作天起）
@@ -1202,6 +1313,7 @@ AUTH=(-u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Content-Type: application/json")
 - 搜尋來源：用 GitHub Search API 對各 repo 搜 title 含上線日期 token（`YYYYMMDD` 與 `YYMMDD`）且 **open 狀態**（`is:open`，簽核在 merge 之前）的 PR（不依賴 head/base 分支名稱）
 - 篩選條件：PR title 符合 `(?i)(\bprod\b|\[prod\])` 正則，並排除 title 含 `hotfix`（不分大小寫）者
 - 每個 repo **只取第一筆**（一個 repo 只會有一個 PROD PR）
+- 二次上線條目：同 STG，日期 token 另加原上線日，並排除第一次上線的 PR
 
 #### 自動動作（有 STG PR 的 repo 全找齊對應 PROD PR 後；無 STG PR 的 repo 不列入、不等待）
 將主單推進到「簽核中」狀態（依目的地狀態尋找 transition）：
@@ -1222,6 +1334,8 @@ AUTH=(-u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Content-Type: application/json")
 - PR：
    - {repo 短標籤}：{PROD PR 連結}   ← 只列已收齊 PROD PR 的 repo，每個一行
 ```
+
+> 二次上線條目標題為「🚀 PROD PR 簽核通知｜{display_name} {deploy_date_yyyymmdd} 二次上線」，內文相同。
 
 ---
 
@@ -1284,6 +1398,7 @@ AUTH=(-u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Content-Type: application/json")
 | `manual_notice_sent` | 轉「簽核中」失敗時設 `true`，防止通知③重複發送（執行期才寫入；Step 5 建立時不含） |
 | `pending_queue` | 同產品第二張以上上線單暫存陣列；每筆含 `deploy_date`、`stg_date`、`deploy_issue_key`、`deploy_issue_url`、`epic_key`、`notify_channel`；現有條目簽核完成後由 `collect_prs.py` 自動啟用下一筆（執行期才寫入；Step 5 建立時初始為 `[]`） |
 | `notify_channel` | 本張單通知管道：`teams`／`chat`（Step 5／H5 依指令寫入；`pending_queue` 條目亦帶此欄位，啟用或優先序調整時一併沿用）；缺此欄位的既有條目視為 `teams` [AI 補充] |
+| `reentry` | 二次上線條目才有：`original_deploy_date`（原上線日，R3 寫入）；`base_content`（Web/API 程式資訊欄位原內容）、`exclude_urls`（第一次上線 PR 網址）、`field_pending`（待寫入）、`guard_notice_sent`（欄位不一致通知已發）由 `collect_prs.py` 執行期寫入；隨條目於 `pending_queue` 升格／啟用時搬移，一般條目不帶此欄位 |
 
 三種終止收尾（轉單成功 signed／重試至停損日仍失敗 manual／安全停損 timeout）皆將 `status` 設為 `completed`，下次執行自動跳過。
 

@@ -1,7 +1,7 @@
 # 104 Release Workflow 操作手冊
 
 > 適用對象：TPM
-> 最後更新：2026-10-21
+> 最後更新：2026-10-22
 
 ---
 
@@ -77,6 +77,7 @@
 | **hotfix 單** | 以「`{YYYYMMDD} {產品名} hotfix`」建立的緊急上線單（同 issue type，標題 `{顯示名稱} - hotfix {M/D}`，送Q 11:00、上線 12:00 同一天）；與維運上線單完全獨立追蹤，PR title 須含 `hotfix` |
 | **緊急簽核** | hotfix 單的簽核狀態；由 TPM 手動觸發「緊急上線」轉換到達。程式偵測到此狀態（或之後）且 PROD PR 收齊才發 hotfix 版通知② |
 | **DR 站子單** | 指令帶 `dr` 時，每個 repo 於主站子單外**另建一張** DR 站子單：名稱 `{name} dr site`、ArgoCD 樣板 `stg-dr-{name}`／`prod-dr-{name}`、組態設定=Y（主站子單不填組態設定） |
+| **二次上線** | 以「`{上線單連結}`」沿用**已上線**的上線單重跑維運流程（提供日＝下指令當天，限原上線日當天或隔日）；不建新單，排入 `pending_queue` 由優先序自動升格；不發通知①；Web/API 程式資訊在第一次上線內容下方加「---{M/D} 二次上線---」後追加本次 PR，第一次上線內容一字不動 |
 
 ---
 
@@ -144,6 +145,26 @@ TPM 輸入「{YYYYMMDD} {產品名} hotfix」（結尾可加 teams／chat）
          停損：hotfix 日 +1 仍未轉緊急簽核 → PROD 已收齊發【TPM 個人通知（情境 2）】；未收齊不通知；皆停止追蹤
 ```
 
+### 二次上線流程（沿用已上線的上線單）
+
+```
+TPM 輸入「{上線單連結}」（結尾可加 teams／chat；提供日＝當天，限原上線日當天或隔日）
+      │
+      ▼ Claude 自動執行
+  讀上線單（產品、原上線日、Epic）→ 檢查 → 開 PR（state.json：排入該產品 pending_queue；該產品無追蹤中的單時直接追蹤）
+      │
+      ▼ TPM review PR → Merge（不發通知①）
+      │
+      ▼ 排程（每 10 分鐘）：二次上線日期最早 → 自動升為追蹤中，原追蹤中的單退回排隊
+  保存上線單 Web/API 程式資訊原內容（第一次上線 PR，稽核來源）
+  搜集 STG／PROD PR（提供日＋原上線日；排除第一次上線的 PR）
+  → 寫入：原內容＋「---{M/D} 二次上線---」＋本次 PR（寫入前比對原內容，不一致不寫入並通知 TPM）
+      │
+      ▼ STG／簽核中轉單、通知③、停損同維運流程
+      ├─ 轉單成功 ──▶ 【通知②】標題「{顯示名稱} {提供日} 二次上線」，終止
+      └─ 結束後自動接回原排隊的單
+```
+
 ### 程式／設定異動流程（需要改 code 或 config 時才用）
 
 ```
@@ -165,6 +186,7 @@ YYYY/MM/DD {產品名}              # 雲端（AWS）產品
 YYYY/MM/DD {產品名} k8s          # 地端（K8s）產品，會一併建立主站 K8s 上線子單
 YYYY/MM/DD {產品名} k8s dr       # 地端＋DR 站：主站與 DR 站子單一起建（每 repo 各一張）
 {YYYYMMDD} {產品名} hotfix       # hotfix（如「20261021 農場 hotfix」；僅雲端產品）
+{上線單連結}                     # 二次上線：沿用已上線的上線單（如「https://{jira-base-url}/browse/{ITPMTALREQ-XXXX} chat」；限原上線日當天或隔日）
 {上列任一指令} chat              # 結尾加 chat：本張單通知發 Google Chat（如「2026/11/30 Pool chat」）
 {上列任一指令} teams             # 結尾加 teams：本張單通知發 Teams；都未加時用 config.json 的 default_notify_channel（過渡期為 teams）
 ```
@@ -172,6 +194,8 @@ YYYY/MM/DD {產品名} k8s dr       # 地端＋DR 站：主站與 DR 站子單�
 Claude 會自動依序執行以下步驟。
 
 > hotfix 指令：Claude 建 hotfix 單（標題 `{顯示名稱} - hotfix {M/D}`、送Q 11:00、上線 12:00）與 Epic（`[hotfix] {YYYYMMDD} 上線`），完成連結與描述欄表格後開 PR；同產品同日已有 hotfix 條目時會停止並回報 [AI 補充]。「緊急上線」轉換（→ 緊急簽核）請於 PROD PR 備妥後手動觸發，並於轉換畫面填處級主管與緊急上線原因。
+
+> 二次上線指令：Claude 讀上線單判斷產品、原上線日與 Epic，檢查通過後開 PR；不建任何 Jira 單、不改上線單欄位。上線單為 hotfix 單、提供日不在原上線日當天或隔日、該單已在追蹤，或同產品同日已有上線單時，Claude 會停止並回報 [AI 補充]。
 
 > 若指令的雲端／地端型態與該產品設定（`hosting`）不符，Claude 會提醒你改用正確指令，不會建立任何單。
 
@@ -235,14 +259,17 @@ Merge 完成後，GitHub Actions 自動觸發上線頻道通知（通知①）�
 - 通知②：hotfix 單已達「緊急簽核」（或之後）且有 STG PR 的 repo 全找齊 PROD PR
 - TPM 個人通知（2 種情境，各發一次）：情境 1：PROD 已收齊、尚未轉「緊急簽核」；情境 2：hotfix 日 +1 時 PROD 已收齊但仍未轉「緊急簽核」（停止追蹤）
 
+**二次上線**：不發通知①；通知②標題改為「{顯示名稱} {提供日} 二次上線」；Web/API 程式資訊欄位與原內容不一致時，另發 TPM 個人通知（僅一次，見 4.3）。
+
 **通知管道**：上表所有通知都依該單 `notify_channel` 發到 Teams 或 Google Chat（同一張單的通知不會分散兩邊）；條目缺此欄位時視為 Teams [AI 補充]。Teams 欄位：`teams_deploy_channel_webhook_url`／`teams_product_channel_webhook_url`／`tpm.teams_personal_webhook_url`；Google Chat 欄位：`google_chat_deploy_webhook_url`／`google_chat_product_webhook_url`／`tpm.google_chat_personal_webhook_url`。
 
 ### 4.2 notify-deploy.yml（上線準備通知）
 
-- **觸發條件：** state.json 被 push 到 main，且（1）`deploy_date` 有變動，或（2）`pending_queue` 有新增條目
+- **觸發條件：** state.json 被 push 到 main，且（1）`deploy_date` 有變動，或（2）`pending_queue` 有新增條目（二次上線條目除外）
 - **執行內容：** 依該單通知管道發送至上線作業頻道（Teams：Adaptive Card；Google Chat：文字訊息，標題粗體），內容包含上線日期、STG 日期、上線單連結，並列出工程師需在討論串留言的事項（STG PR / PROD PR / Develop PR / APIM / SRE / Rundown）
 - **@mention：** `talent_engineering_members` 中已填 `aad_id`（Teams）或 `google_chat_id`（Google Chat，寫法 `<users/{ID}>`）的工程師，依名單順序
 - **手動補發：** GitHub Actions → Notify Deploy Channel →「Run workflow」，可指定產品名稱（留空＝所有 active 產品）。手動觸發時，active 條目與所有 `pending_queue` 條目的通知都會一併發送。
+- **二次上線：** 二次上線條目（帶 `reentry`）不發通知①，手動補發也會略過。
 
 **通知內容版型**（順序、項目符號皆以程式 `notify_deploy.py` 實際輸出為準）：
 
@@ -307,6 +334,7 @@ hotfix 單：{Jira 連結}
   - **失敗** → 發人工轉單提醒至 TPM 個人聊天（**僅首次失敗發送**），保持追蹤、之後每 10 分自動重試（如 QA 尚未把單轉到「Staging測試完成」的時序問題會自癒）；**超過上線日 +1 日曆天仍失敗**才再發一次提醒並終止
 - **安全停損：** PROD 一直沒找齊，且 `today > 上線日 +1 日曆天`（即上線日 +2 起）→ 發告警至 TPM 個人聊天，終止
 - 終止收尾（轉單成功 `signed`／重試至停損日仍失敗 `manual`／安全停損 `timeout`）皆設 `status=completed`，之後排程跳過；STG 也隨之停止。轉「簽核中」失敗**當下不會**設 completed，會持續重試
+- **二次上線條目：** 日期 token 為提供日＋原上線日，排除第一次上線已列的 PR；STG／簽核中轉單、通知③與停損同上（以提供日計算）
 
 **轉狀態邏輯：** 所有上線單共用同一個 ITPMTALREQ workflow（19_Requirement Wf V4.6），程式**依目的地狀態尋找 transition**（掃可用 transition，找 `to.name` 符合的執行），不綁 transition 名稱或 id：
 
@@ -343,6 +371,37 @@ hotfix 單：{Jira 連結}
 
 > 每個 repo 都會列出；本次無 PR 的 repo 仍會出現、僅剩標籤（如 `Rundeck：`）。
 
+**二次上線條目的 Web/API 程式資訊欄位**：首次處理時保存欄位原內容（第一次上線 PR，稽核來源），之後每次只重畫分隔線以下：
+
+```
+{第一次上線內容，一字不動}
+---{提供日 M/D} 二次上線---
+[STG PR]
+• {repo 短標籤}：{本次 STG PR}
+
+[PROD PR]
+• {repo 短標籤}：{本次 PROD PR}
+```
+
+- 原內容最後一段已是同一行分隔線（如手動加過）時，不重複加
+- 每次寫入前重新讀取欄位，比對開頭與保存的原內容（只比內容與結構，不比 Jira 自動附加的內部屬性 [AI 補充]）；不一致即**不寫入**，發 TPM 個人通知（僅一次），下輪再比對，一致後補寫
+- 讀不到原內容（Jira 回應錯誤，或欄位不是 Jira 原生格式）：該輪不做任何事、下輪重試；至提供日 +1 仍讀不到即停止追蹤（未寫入任何內容）、發 TPM 個人通知，並接回下一張排隊的單 [AI 補充]
+- Jira 上線單的變更歷程會保留每次修改前後的全文
+
+二次上線 TPM 個人通知（2 種情境，各發一次）[AI 補充]：
+
+```
+⚠️ {產品名}：二次上線 Web/API 程式資訊欄位與原內容不一致，已暫停寫入。
+{上線單號} 第一次上線內容與系統保存版本不同，請人工確認。
+上線單：{Jira 連結}
+```
+
+```
+⚠️ {產品名}：二次上線讀不到 Web/API 程式資訊原內容，已停止自動追蹤。
+{上線單號} 至提供日 +1 仍無法讀取第一次上線內容，程式未寫入任何內容，請人工確認。
+上線單：{Jira 連結}
+```
+
 **通知②（PROD PR 簽核通知）版型**（只列已收齊 PROD PR 的 repo，每個一行；以程式 `collect_prs.py` 實際輸出為準；Google Chat 版內容相同，標題以粗體呈現、@mention 改用 `<users/{google_chat_id}>`）：
 
 ```
@@ -366,6 +425,8 @@ hotfix 單：{Jira 連結}
 - PR：
    - Frontend：https://github.com/{org}/{repo-name}/pull/{N}
 ```
+
+二次上線版通知②：標題改為「🚀 PROD PR 簽核通知｜{顯示名稱} {提供日YYYYMMDD} 二次上線」，內文同上，PR 只列本次 PROD PR。
 
 **hotfix 條目（`type=hotfix`）的處理**（同一支 `collect_prs.py`，獨立流程）：
 
@@ -410,9 +471,10 @@ hotfix 單：{Jira 連結}
 `state.json` 以產品名為 key 管理各產品的上線追蹤。若同一產品同時有兩張（或多張）上線單，系統使用 **`pending_queue`** 暫存後續待啟用的條目：
 
 1. **Claude 在 Step 5 自動判斷**：若該產品已有 active 條目，不覆蓋，改在現有條目的 `pending_queue` 陣列新增一筆（含 `deploy_date`、`stg_date`、`deploy_issue_key`、`deploy_issue_url`、`epic_key`、`notify_channel`）
-2. **通知①同步發送**：PR merge 後，`notify_deploy.py` 會同時替 `pending_queue` 新增的條目發送上線準備通知（不只發 active 條目）
+2. **通知①同步發送**：PR merge 後，`notify_deploy.py` 會同時替 `pending_queue` 新增的條目（二次上線條目除外）發送上線準備通知（不只發 active 條目）
 3. **自動啟用**：待前張單轉「簽核中」成功，`collect_prs.py` 自動將 `pending_queue` 第一筆提升為 active，**無需人工操作**
 4. **hotfix 不佔用 pending_queue**：hotfix 條目使用獨立 key（`{產品名} hotfix {YYYYMMDD}`），不進入、也不影響該產品維運條目的 active／`pending_queue`；同產品同一天可同時有維運與 hotfix，兩者以 PR title 是否含 `hotfix` 區分、互不干擾
+5. **二次上線排入 pending_queue**：二次上線條目（帶 `reentry`）日期最早，排程自動升為追蹤中，原追蹤中的單退回排隊；退回期間不搜集其 PR（已收集的 PR 自 state.json 清空，Jira 欄位已寫入內容不受影響），二次上線結束後自動接回並重新搜集。同產品同日已有上線單時 Claude 不建立二次上線 [AI 補充]
 
 ---
 
@@ -789,6 +851,7 @@ Skill 觸發後需要知道你的 GitHub repo 位置（`{owner}/{repo}`）——
 |------|------|------|
 | 上線部署 | `chore/activate-{產品}-{日期}` | `chore/activate-{產品}-20260716` |
 | hotfix | `chore/activate-{產品}-hotfix-{日期}` | `chore/activate-{產品}-hotfix-20261021` |
+| 二次上線 | `chore/activate-{產品}-reentry-{提供日}` | `chore/activate-{產品}-reentry-20261022` |
 | 設定更新 | `config/簡述` | `config/update-aad-ids` |
 | 修 bug | `fix/簡述` | `fix/notify-deploy-logic` |
 | 新功能 | `feat/簡述` | `feat/add-product-b` |
@@ -872,8 +935,8 @@ cd ~/Documents/{repo-name} && git fetch origin && git reset --hard origin/main
 直接告訴 Claude 建立第二張上線單即可。若該產品 state.json 已有 active 條目，Claude 會自動將第二張加入 `pending_queue`，不覆蓋現有追蹤。
 
 - 前張上線單轉「簽核中」成功後，系統自動啟用 `pending_queue` 的下一筆，無需手動操作
-- PR merge 後，通知①也會同時替 `pending_queue` 的條目發送
-- 手動補發（Run workflow）時，active 與所有 `pending_queue` 條目的通知都會一併發送
+- PR merge 後，通知①也會同時替 `pending_queue` 的條目發送（二次上線條目除外）
+- 手動補發（Run workflow）時，active 與所有 `pending_queue` 條目的通知都會一併發送（二次上線條目除外）
 
 ### Q：hotfix 的 PROD PR 都到了，但沒收到通知②？
 
@@ -881,6 +944,12 @@ cd ~/Documents/{repo-name} && git fetch origin && git reset --hard origin/main
 2. 確認各 PR title 皆含上線日期、`stg`/`prod` 與 `hotfix`；有 STG PR 的 repo 需都有對應 PROD PR
 3. PROD 收齊、尚未轉緊急簽核時，TPM 個人聊天會收到一次「hotfix PROD PR 已收齊」通知；手動轉「緊急簽核」後，下一輪即發通知②
 4. 需要補發時：GitHub Actions → Notify Signing Channel →「Run workflow」，`product_name` 填 hotfix 條目 key（如「農場 hotfix 20261021」）；hotfix 日 +1 已停止追蹤的條目，`force` 需設 `true`
+
+### Q：二次上線沒有在第一次上線內容下方出現新的 PR？
+
+1. 確認 PR title 含原上線日或提供日、`stg`/`prod`，且不含 `hotfix`；第一次上線已列的 PR 不會再列
+2. TPM 個人聊天若收到「二次上線 Web/API 程式資訊欄位與原內容不一致」：表示第一次上線內容被修改過，程式已暫停寫入以免覆蓋；請到上線單「變更歷程」確認並還原，下一輪排程會自動補寫
+3. GitHub Actions → PR Collector & Deploy Notifier 的 log 中，二次上線條目會標示「二次上線（原上線日 …）」
 
 ### Q：PR 簽核後本地如何同步？
 

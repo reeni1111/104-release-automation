@@ -8,6 +8,7 @@ notify_deploy.py
 - hotfix 條目（type=hotfix，key「{產品名} hotfix {YYYYMMDD}」）：以 product 對應 config，發 hotfix 版通知①
 - 通知管道依條目 notify_channel（teams／chat；缺欄位視為 teams）：teams 發 Adaptive Card 至 teams_deploy_channel_webhook_url，
   chat 發文字訊息至 google_chat_deploy_webhook_url（@mention 用 <users/google_chat_id>）
+- 二次上線條目（帶 reentry，active 或 pending_queue）一律不發通知①
 """
 
 import json
@@ -169,9 +170,11 @@ def main():
             products = list(active.keys())
         for p in products:
             dep = active[p]
-            to_notify_pairs.append((p, dep))
+            if not dep.get('reentry'):          # 二次上線不發通知①
+                to_notify_pairs.append((p, dep))
             for entry in dep.get('pending_queue', []):
-                to_notify_pairs.append((p, entry))
+                if not entry.get('reentry'):
+                    to_notify_pairs.append((p, entry))
         print(f"[workflow_dispatch] Notifying {len(to_notify_pairs)} deployment(s)")
 
     else:
@@ -187,12 +190,13 @@ def main():
 
             # active 條目：deploy_date 有變動，且新 deploy_date 不是從 pending 啟用的
             if new['deploy_date'] != old.get('deploy_date'):
-                if new['deploy_date'] not in old_pending_dates:
+                if new['deploy_date'] not in old_pending_dates and not new.get('reentry'):   # 二次上線不發通知①
                     to_notify_pairs.append((p, new))
 
             # pending 條目：不在舊的 pending_dates 裡，且不是從 active 降入的（priority swap 不重送）
             for entry in new.get('pending_queue', []):
-                if entry['deploy_date'] not in old_pending_dates and entry['deploy_date'] != old.get('deploy_date'):
+                if (entry['deploy_date'] not in old_pending_dates and entry['deploy_date'] != old.get('deploy_date')
+                        and not entry.get('reentry')):                                      # 二次上線不發通知①
                     to_notify_pairs.append((p, entry))
 
         if not to_notify_pairs:
