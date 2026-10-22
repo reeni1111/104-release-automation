@@ -8,6 +8,7 @@ notify_signing.py
   hotfix 條目以其 key 指定（如「農場 hotfix 20261021」），以 product 對應 config，發 hotfix 版文案。
 - 通知管道依條目 notify_channel（teams／chat；缺欄位視為 teams）：teams 發 Adaptive Card 至 teams_product_channel_webhook_url，
   chat 發文字訊息至 google_chat_product_webhook_url（@mention 用 <users/google_chat_id>）。
+- 二次上線條目（帶 reentry）標題為「{顯示名稱} {提供日} 二次上線」。
 - 防呆（可用 FORCE=true 覆蓋）：
   * 未指定產品            → 直接失敗
   * 產品不在 state.json   → 直接失敗
@@ -140,6 +141,8 @@ def main():
             f"- 上線單：{jira_url}\n- PR：\n" + "\n".join(pr_lines)
         )
         title = f"🚀 PROD PR 簽核通知｜{display_name} {deploy_date}"
+        if deployment.get("reentry"):
+            title += " 二次上線"
 
     try:
         status = post_card(webhook_url, title, body, entities, channel)
