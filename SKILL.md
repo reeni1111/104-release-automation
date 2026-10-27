@@ -717,7 +717,7 @@ hotfix 單：{jira_url}
 ### 自動階段（GitHub Actions；Claude 不執行）
 
 1. **通知①**：不發（push 與手動補發皆不發）
-2. **保存原內容**（首次處理）：讀取上線單 Web/API 程式資訊欄位（`customfield_12324`）原內容存入 `reentry.base_content`，其中 PR 網址存入 `reentry.exclude_urls`；讀不到（Jira 回應錯誤，或欄位不是 Jira 原生格式）時該輪不做任何事、下輪重試；至提供日 +1 仍讀不到即停止追蹤（未寫入任何內容）、發 TPM 個人通知，並接回 `pending_queue` 下一張 [AI 補充]
+2. **保存原內容**（首次處理）：讀取上線單 Web/API 程式資訊欄位（`customfield_12324`）原內容存入 `reentry.base_text`（以 Jira REST API v2 讀取欄位實際儲存的文字，不經格式轉換），其中 PR 網址存入 `reentry.exclude_urls`；讀不到（Jira 回應錯誤，或欄位不是文字格式）時該輪不做任何事、下輪重試；至提供日 +1 仍讀不到即停止追蹤（未寫入任何內容）、發 TPM 個人通知，並接回 `pending_queue` 下一張 [AI 補充]
 3. **PR 搜集**：條件同維運（STG 已 merged、PROD open、排除 title 含 hotfix），日期 token 為提供日與原上線日；排除 `exclude_urls`（第一次上線的 PR）
 4. **Web/API 程式資訊**：每次寫入＝原內容（原樣）＋分隔線＋本次 PR（格式同維運）；原內容最後一段已是同一行分隔線時不重複加
 
@@ -731,7 +731,7 @@ hotfix 單：{jira_url}
    • {repo 短標籤}：{本次 PROD PR}
    ```
 
-   - 寫入前重新讀取欄位，比對開頭與原內容（只比內容與結構，不比 Jira 自動附加的內部屬性 [AI 補充]）；不一致即不寫入，發 TPM 個人通知（僅一次），下輪再比對，一致後補寫
+   - 寫入前重新讀取欄位，逐字比對：欄位須以原內容開頭，或與程式上次寫入的內容完全相同 [AI 補充]；不一致即不寫入，發 TPM 個人通知（僅一次），下輪再比對，一致後補寫
    - Jira 變更歷程保留每次修改前後的全文
 5. **STG 轉單、轉「簽核中」、通知③、安全停損**：沿用維運流程（以提供日計算）
 6. **通知②**：標題「🚀 PROD PR 簽核通知｜{display_name} {提供日 YYYYMMDD} 二次上線」，內文與維運相同，PR 只列本次 PROD PR
@@ -906,7 +906,7 @@ hotfix 單：{jira_url}
 64. **使用者否決某設計時，須連同承載它的所有形式一併刪除**：設定檔、欄位、參數、旗標、函式、UI 文案，**以及描述它的敘述句**。不得以改寫措辭、搬移到其他章節或其他文件、降級為「選項／建議／未來可加／目前不啟用」等方式讓該概念存活。**刪掉容器卻保留概念＝未刪除。**
 65. **刪除後必須跨全交付物掃描確認零殘留**：以該設計的識別關鍵詞（欄位名、參數名、概念詞）掃描條 62 所列**全部**項目。**「概念被改寫成不同措辭」亦屬殘留**——字串比對不足以證明清除，須另以概念為準重讀相關章節。掃描通過才算完成、才回報。
 66. **移除類修訂須在同一次完成**，不得「先刪主體、敘述之後再說」，亦不得「先改程式、文件之後再說」。
-67. **打包前重新掃描**：`*.skill` 等打包檔為快照，最易挾帶已刪除的舊內容。每次打包前須重新確認打包來源與最新版一致。
+67. **打包前重新掃描**：`*.skill` 等打包檔為快照，最易挟帶已刪除的舊內容。每次打包前須重新確認打包來源與最新版一致。
 
 ### 0.20 對帳與作者責任（適用全交付物）
 
@@ -1398,7 +1398,7 @@ AUTH=(-u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Content-Type: application/json")
 | `manual_notice_sent` | 轉「簽核中」失敗時設 `true`，防止通知③重複發送（執行期才寫入；Step 5 建立時不含） |
 | `pending_queue` | 同產品第二張以上上線單暫存陣列；每筆含 `deploy_date`、`stg_date`、`deploy_issue_key`、`deploy_issue_url`、`epic_key`、`notify_channel`；現有條目簽核完成後由 `collect_prs.py` 自動啟用下一筆（執行期才寫入；Step 5 建立時初始為 `[]`） |
 | `notify_channel` | 本張單通知管道：`teams`／`chat`（Step 5／H5 依指令寫入；`pending_queue` 條目亦帶此欄位，啟用或優先序調整時一併沿用）；缺此欄位的既有條目視為 `teams` [AI 補充] |
-| `reentry` | 二次上線條目才有：`original_deploy_date`（原上線日，R3 寫入）；`base_content`（Web/API 程式資訊欄位原內容）、`exclude_urls`（第一次上線 PR 網址）、`field_pending`（待寫入）、`guard_notice_sent`（欄位不一致通知已發）由 `collect_prs.py` 執行期寫入；隨條目於 `pending_queue` 升格／啟用時搬移，一般條目不帶此欄位 |
+| `reentry` | 二次上線條目才有：`original_deploy_date`（原上線日，R3 寫入）；`base_text`（Web/API 程式資訊欄位原內容，Jira 實際儲存的文字）、`exclude_urls`（第一次上線 PR 網址）、`field_pending`（待寫入）、`guard_notice_sent`（欄位不一致通知已發）、`last_written_text`（程式上次寫入的內容）由 `collect_prs.py` 執行期寫入；隨條目於 `pending_queue` 升格／啟用時搬移，一般條目不帶此欄位 |
 
 三種終止收尾（轉單成功 signed／重試至停損日仍失敗 manual／安全停損 timeout）皆將 `status` 設為 `completed`，下次執行自動跳過。
 
