@@ -18,6 +18,9 @@ PROD（上線日 −1 工作天起，每 10 分）：
     2. 轉「簽核中」失敗 → 發 TPM 個人頻道人工提醒（僅首次發送），保持 active 每輪重試；
        超過停損日（上線日 +1）仍失敗才終止（stopped_reason=manual）
     3. 安全停損：PROD 一直沒找齊且 today > 上線日 +1 日曆天 → 發 TPM 個人頻道告警
+    PROD 收齊時主單已被人工推進（不轉單）：
+       「線上作業中」／「Production測試中」→ 直接發通知②（stopped_reason=signed）
+       「Production測試完成」→ 視為已簽核，不發通知②③（stopped_reason=signed）
 
 通知管道：依條目 notify_channel（teams／chat；缺欄位視為 teams）選 Teams 或 Google Chat 的 webhook 與訊息格式
 （通知②：teams_product_channel_webhook_url／google_chat_product_webhook_url；
@@ -37,12 +40,15 @@ Hotfix（state.json 條目 type=hotfix，key「{產品名} hotfix {YYYYMMDD}」�
 
 二次上線（維運條目帶 reentry；沿用已上線的上線單，排入 pending_queue 由優先序自動升格）：
     搜集以提供日（deploy_date）與原上線日（reentry.original_deploy_date）兩個日期 token，排除第一次上線已列的 PR
-    Web/API 程式資訊：首次處理時保存欄位原內容（reentry.base_text），之後每次寫入＝原內容＋「---{M/D} 二次上線---」＋本次 PR；
-    寫入前比對欄位開頭與原內容，不一致即不寫入並發 TPM 個人通知（僅一次）
+    Web/API 程式資訊：首次處理時保存欄位原內容（reentry.base_text）與其中 PR 網址；讀不到時本輪暫停、每 10 分重試，首次失敗發 TPM 個人通知
+    每次寫入以欄位目前內容為底：最後一條「---{M/D} 二次上線---」分隔線（含）以上一字不動，只重新產生分隔線以下的本次 PR
+    （找不到分隔線時於全文後空一行加分隔線）；欄位與程式上次寫入內容不同時照常寫入，並發 TPM 個人通知列出差異
+    讀寫欄位失敗：PR 照常搜集，下輪重試寫入，首次失敗發 TPM 個人通知
     STG／簽核中轉單、通知③、停損沿用維運流程；通知②標題為「{顯示名稱} {提供日} 二次上線」；不發通知①
 """
 
 import base64
+import difflib
 import json
 import os
 import re
@@ -199,6 +205,10 @@ STG_REACHED_OR_PASSED = {
     "STAGING測試中", "Staging測試完成", "簽核中",
     "Production測試中", "Production測試完成", "線上作業中", "結案",
 }
+
+# PROD 收齊時主單已被人工推進過「簽核中」→ 不轉單（已無法轉回「簽核中」）
+PROD_NOTIFY_WITHOUT_TRANSITION = {"線上作業中", "Production測試中"}   # 直接發通知②
+PROD_SIGNED_STATUSES           = {"Production測試完成"}             # 視為已簽核，不發通知②③
 
 # hotfix：上線單由 TPM 手動轉「緊急簽核」；程式只讀狀態、不轉單
 HOTFIX_EMERGENCY_REACHED = {"緊急簽核", "線上作業中", "Production測試中", "Production測試完成"}
@@ -375,36 +385,48 @@ def capture_reentry_base(deployment: dict, field_id: str) -> bool:
     return True
 
 
-def build_reentry_text(deployment: dict, repo_display_names: dict) -> str:
-    """原文字（一字不動）＋分隔線＋本次 PR。原文字最後一行已是同一行分隔線時不重複加。"""
-    base = deployment["reentry"]["base_text"]
-    sep  = reentry_separator_text(deployment["deploy_date"])
-    last = base.rstrip("\n").split("\n")[-1].strip() if base.strip() else ""
-    if last == sep:
-        head = base
-    elif base:
-        head = base + ("" if base.endswith("\n") else "\n") + "\n" + sep
+def build_reentry_text(current: str, deployment: dict, repo_display_names: dict) -> str:
+    """以欄位目前內容為底：最後一條分隔線（含）以上一字不動，只重新產生分隔線以下的本次 PR；
+    找不到分隔線時，於目前全文後空一行加分隔線與本次 PR。"""
+    sep   = reentry_separator_text(deployment["deploy_date"])
+    lines = current.split("\n")
+    idx   = max((i for i, l in enumerate(lines) if l.strip() == sep), default=None)
+    if idx is not None:
+        head = "\n".join(lines[:idx + 1])
+    elif current.strip():
+        head = current.rstrip("\n") + "\n\n" + sep
     else:
         head = sep
     return head + "\n" + build_web_api_text(deployment["stg_prs"], deployment["prod_prs"], repo_display_names)
 
 
+def _diff_lines(old: str, new: str) -> list:
+    """逐行差異：「- 舊行」「+ 新行」。"""
+    return [f"{l[0]} {l[2:]}" for l in difflib.ndiff(old.split("\n"), new.split("\n")) if l[:2] in ("- ", "+ ")]
+
+
 def update_reentry_field(product_name: str, deployment: dict, field_id: str,
                          repo_display_names: dict) -> bool:
-    """寫入前逐字比對：欄位須以原文字開頭，或與程式上次寫入的內容完全相同；否則不寫入、發 TPM 個人通知（僅一次）。"""
+    """以欄位目前內容為底寫入（分隔線以上一字不動）。欄位與程式上次寫入（未寫過則為保存的原內容）不同時照常寫入，
+    並發 TPM 個人通知列出差異。讀寫失敗：不寫入、下輪重試，首次失敗發 TPM 個人通知（每張單一次）。"""
     reentry = deployment["reentry"]
     ok, current = get_web_api_text(deployment["deploy_issue_key"], field_id)
-    if not ok:
+    text = build_reentry_text(current, deployment, repo_display_names) if ok else ""
+    if not ok or not put_web_api_text(deployment["deploy_issue_key"], field_id, text):
+        print("  ⚠️  Web/API 程式資訊讀寫失敗，本輪未寫入，下輪重試")
+        if not reentry.get("write_fail_notice_sent"):
+            notify_reentry_tpm(product_name, deployment, "write_failed")
+            reentry["write_fail_notice_sent"] = True
         return False
-    if not (current.startswith(reentry["base_text"]) or current == reentry.get("last_written_text")):
-        print("  ❌ 欄位與保存的原內容不一致，暫停寫入（不覆蓋第一次上線內容）")
-        if not reentry.get("guard_notice_sent"):
-            notify_reentry_guard(product_name, deployment)
-            reentry["guard_notice_sent"] = True
-        return False
-    text = build_reentry_text(deployment, repo_display_names)
-    if not put_web_api_text(deployment["deploy_issue_key"], field_id, text):
-        return False
+    expected = reentry.get("last_written_text", reentry["base_text"])
+    if current != expected:
+        cur_lines, new_lines = current.split("\n"), text.split("\n")
+        head_len  = next((i + 1 for i in range(len(cur_lines) - 1, -1, -1)
+                          if cur_lines[i].strip() == reentry_separator_text(deployment["deploy_date"])), len(cur_lines))
+        new_tail  = new_lines[head_len:]
+        overwritten = [f"- {l}" for l in cur_lines[head_len:] if l.strip() and l not in new_tail]
+        print("  ℹ️  欄位有人工異動，已照常寫入並通知 TPM")
+        notify_reentry_tpm(product_name, deployment, "changed", _diff_lines(expected, current), overwritten)
     reentry["last_written_text"] = text
     return True
 
@@ -436,7 +458,7 @@ def _post_card(webhook_url: str, title: str, body: str, entities: list, channel:
 
 
 def send_signing_notification(product_name: str, deployment: dict, product_config: dict) -> bool:
-    """轉「簽核中」成功 → 發 PROD PR 簽核通知至產品頻道（通知②），@mention 簽核人。"""
+    """轉「簽核中」成功（或 PROD 收齊時主單已在「線上作業中」／「Production測試中」）→ 發 PROD PR 簽核通知至產品頻道（通知②），@mention 簽核人。"""
     channel     = deployment.get("notify_channel", "teams")
     webhook_key = "google_chat_product_webhook_url" if channel == "chat" else "teams_product_channel_webhook_url"
     webhook_url = product_config.get(webhook_key, "")
@@ -553,26 +575,42 @@ def notify_prod_timeout(product_name: str, deployment: dict):
         print(f"  ❌ 安全停損告警失敗: HTTP {resp.status_code}")
 
 
-def notify_reentry_guard(product_name: str, deployment: dict, unreadable: bool = False):
+def notify_reentry_tpm(product_name: str, deployment: dict, kind: str,
+                       diff: list = None, overwritten: list = None):
     """二次上線 TPM 個人通知：
-    unreadable=False：欄位開頭與保存的原內容不一致，已暫停寫入（繼續追蹤）
-    unreadable=True ：至提供日 +1 仍讀不到欄位原內容，已停止追蹤（未寫入任何內容）"""
+    changed       ：欄位有人工異動，已照常寫入（列出差異與被覆蓋的分隔線以下內容）
+    capture_failed：首次讀不到原內容，本輪暫停搜集，每 10 分重試
+    write_failed  ：寫入時讀寫失敗，本輪未寫入，PR 搜集照常，每 10 分重試
+    unreadable    ：至提供日 +1 仍讀不到原內容，已停止追蹤"""
     channel, url_key, webhook_url = _tpm_personal_target(deployment)
     if not webhook_url or "FILL_IN" in webhook_url:
         print(f"  ⚠️  {url_key} 未設定，跳過二次上線 TPM 個人通知")
         return
     issue_key = deployment["deploy_issue_key"]
     jira_url  = deployment["deploy_issue_url"]
-    if unreadable:
+    if kind == "changed":
+        lines = [f"⚠️ {product_name}：二次上線 Web/API 程式資訊欄位有人工異動，已照常寫入本次 PR。",
+                 f"{issue_key} 異動內容（- 程式上次寫入／+ 目前欄位）："] + (diff or [])
+        if overwritten:
+            lines += ["本次寫入覆蓋的分隔線以下內容："] + overwritten
+        lines += ["分隔線以上（第一次上線內容）程式未變動。", f"上線單：{jira_url}"]
+        message = "\n".join(lines)
+    elif kind == "capture_failed":
         message = (
-            f"⚠️ {product_name}：二次上線讀不到 Web/API 程式資訊原內容，已停止自動追蹤。\n"
-            f"{issue_key} 至提供日 +1 仍無法讀取第一次上線內容，程式未寫入任何內容，請人工確認。\n"
+            f"⚠️ {product_name}：二次上線讀不到 Web/API 程式資訊原內容，本輪暫停搜集。\n"
+            f"{issue_key} 每 10 分鐘重試；至提供日 +1 仍讀不到即停止追蹤（不寫入任何內容）。\n"
+            f"上線單：{jira_url}"
+        )
+    elif kind == "write_failed":
+        message = (
+            f"⚠️ {product_name}：二次上線 Web/API 程式資訊欄位讀寫失敗，本輪未寫入。\n"
+            f"{issue_key} PR 搜集照常進行，每 10 分鐘重試寫入，成功後不另行通知。\n"
             f"上線單：{jira_url}"
         )
     else:
         message = (
-            f"⚠️ {product_name}：二次上線 Web/API 程式資訊欄位與原內容不一致，已暫停寫入。\n"
-            f"{issue_key} 第一次上線內容與系統保存版本不同，請人工確認。\n"
+            f"⚠️ {product_name}：二次上線讀不到 Web/API 程式資訊原內容，已停止自動追蹤。\n"
+            f"{issue_key} 至提供日 +1 仍無法讀取第一次上線內容，程式未寫入任何內容，請人工確認。\n"
             f"上線單：{jira_url}"
         )
     resp = requests.post(webhook_url, json={"text" if channel == "chat" else "message": message})
@@ -837,7 +875,7 @@ def main():
             if not capture_reentry_base(deployment, field_id):
                 if today > prod_cutoff:     # 停損日仍無法保存 → 比照安全停損收尾，避免佔住追蹤位置
                     print("  ⏰ 提供日 +1 仍讀不到原內容 → 停止追蹤（未寫入任何內容），個人頻道通知，接回下一張")
-                    notify_reentry_guard(product_name, deployment, unreadable=True)
+                    notify_reentry_tpm(product_name, deployment, "unreadable")
                     deployment["status"] = "completed"
                     deployment["stopped_reason"] = "timeout"
                     state_changed = True
@@ -845,6 +883,10 @@ def main():
                         state_changed = True
                 else:
                     print("  ⚠️  原內容保存失敗，本輪略過，下輪重試")
+                    if not reentry.get("capture_fail_notice_sent"):
+                        notify_reentry_tpm(product_name, deployment, "capture_failed")
+                        reentry["capture_fail_notice_sent"] = True
+                        state_changed = True
                 continue
             state_changed = True
         exclude_urls = set(reentry.get("exclude_urls", [])) if reentry else set()
@@ -931,6 +973,24 @@ def main():
             all_found = bool(scoped_repos) and all(deployment["prod_prs"].get(r) for r in scoped_repos)
             if all_found:
                 scope_str = ", ".join(repo_names.get(r, r.split("/")[-1]) for r in scoped_repos)
+                current_status = get_issue_status(issue_key)
+                if current_status in PROD_NOTIFY_WITHOUT_TRANSITION | PROD_SIGNED_STATUSES:
+                    # 主單已被人工推進過「簽核中」：不轉單、不發通知③
+                    if current_status in PROD_SIGNED_STATUSES:
+                        print(f"  ✅ All PROD found (scope: {scope_str}). {issue_key} 已在「{current_status}」→ 視為已簽核，不發通知②③")
+                        done = True
+                    else:
+                        print(f"  ✅ All PROD found (scope: {scope_str}). {issue_key} 已在「{current_status}」→ 不轉單，直接發通知②")
+                        done = send_signing_notification(product_name, deployment, product_config)
+                        if done:
+                            deployment["signing_notified"] = True
+                    if done:
+                        deployment["status"] = "completed"
+                        deployment["stopped_reason"] = "signed"
+                        state_changed = True
+                        if _activate_next_pending(deployment, repos):
+                            state_changed = True
+                    continue
                 print(f"  🎉 All PROD found (scope: {scope_str}). Transitioning {issue_key} → {PROD_TARGET_STATUS}...")
                 # 轉「簽核中」必須帶簽核主管（validator 必填）
                 sign_manager_id = product_config.get("jira_sign_manager_account_id", "")
