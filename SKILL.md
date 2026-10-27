@@ -42,10 +42,13 @@ description: >
   │         └─ 有 STG PR → 推進「STAGING測試中」狀態（未成功每輪重試；狀態已達或超過則視為完成）
   │
   │ Step 8  上線日 −1 工作天起，每 10 分搜集 PROD PR（prod/[prod]，抓 open；排除 title 含 hotfix）
-  │         └─ 有 STG PR 的 repo 全找齊 → 嘗試轉「簽核中」（帶簽核主管）
-  │              ├─ 轉單成功 →【通知②】產品頻道（Teams／Google Chat，依 notify_channel）@mention 簽核人，終止
-  │              └─ 轉單失敗 →【通知③】個人聊天提醒（僅首次發送），保持追蹤每輪重試
-  │                   → 超過上線日 +1 日曆天仍失敗 → 再發通知③一次並終止
+  │         └─ 有 STG PR 的 repo 全找齊 → 先讀上線單狀態
+  │              ├─ 已在「線上作業中」／「Production測試中」→ 不轉單，【通知②】，終止
+  │              ├─ 已在「Production測試完成」→ 視為已簽核，不發通知②③，終止
+  │              └─ 其他 → 嘗試轉「簽核中」（帶簽核主管）
+  │                   ├─ 轉單成功 →【通知②】產品頻道（Teams／Google Chat，依 notify_channel）@mention 簽核人，終止
+  │                   └─ 轉單失敗 →【通知③】個人聊天提醒（僅首次發送），保持追蹤每輪重試
+  │                        → 超過上線日 +1 日曆天仍失敗 → 再發通知③一次並終止
   │         安全停損：上線日 +1 仍未找齊 → 個人聊天告警，終止
   └─────────────────────────────────────────────────────────────
 ```
@@ -59,7 +62,7 @@ description: >
 | # | 通知名稱 | 觸發時機 | 發送對象 | 目的地 | webhook 欄位（teams／chat，依該單 `notify_channel`） |
 |---|---------|---------|---------|------|-------------|
 | 1 | 上線準備通知 | `deploy_date` 變動 push 至 main（二次上線不發） | `talent_engineering_members` | 上線作業頻道 | `teams_deploy_channel_webhook_url`／`google_chat_deploy_webhook_url` |
-| 2 | PROD PR 簽核通知 | 有 STG PR 的 repo 之 PROD PR 全找齊、轉「簽核中」成功 | `approvers` | 產品頻道 | `teams_product_channel_webhook_url`／`google_chat_product_webhook_url` |
+| 2 | PROD PR 簽核通知 | 有 STG PR 的 repo 之 PROD PR 全找齊、轉「簽核中」成功；或全找齊時上線單已在「線上作業中」／「Production測試中」（不轉單，直接發送）。已在「Production測試完成」視為已簽核，不發②③ | `approvers` | 產品頻道 | `teams_product_channel_webhook_url`／`google_chat_product_webhook_url` |
 | 3 | 人工轉單提醒 | PROD PR 找齊但自動轉「簽核中」失敗（僅首次失敗發送；重試至上線日 +1 仍失敗再發一次並終止） | TPM 個人聊天 | 個人聊天（Teams：Power Automate／Chat：TPM 個人通知聊天室） | `tpm.teams_personal_webhook_url`／`tpm.google_chat_personal_webhook_url` |
 | 4 | 安全停損告警 | 上線日 +1 仍未蒐齊 PROD PR | TPM 個人聊天 | 個人聊天（Teams：Power Automate／Chat：TPM 個人通知聊天室） | `tpm.teams_personal_webhook_url`／`tpm.google_chat_personal_webhook_url` |
 
@@ -67,7 +70,7 @@ description: >
 
 > Hotfix 版通知①②與 TPM 個人通知文案見「Hotfix 流程」節。
 
-> 二次上線：不發通知①；通知②標題改為「{display_name} {提供日} 二次上線」；Web/API 程式資訊欄位與原內容不一致時另發 TPM 個人通知，見「二次上線流程」節。
+> 二次上線：不發通知①；通知②標題改為「{display_name} {提供日} 二次上線」；Web/API 程式資訊欄位有人工異動（照常寫入並列出差異）、讀寫欄位失敗時另發 TPM 個人通知，見「二次上線流程」節。
 
 > **通知管道（`notify_channel`）**：每張單（維運、hotfix、`pending_queue` 條目）各自記錄 `teams` 或 `chat`，該單的通知①②與 TPM 個人通知一律發到同一個通訊軟體；條目缺此欄位時視為 `teams` [AI 補充]。Google Chat 以文字訊息發送：payload `{"text": "..."}`，標題以 `*粗體*` 呈現，@mention 寫法 `<users/{google_chat_id}>`。
 
@@ -471,7 +474,7 @@ mcp__github__get_file_contents(owner="{CONFIG.github.owner}", repo="{CONFIG.gith
 }
 ```
 
-> **同產品已有 active 條目時（第二張以上上線單）**：不覆蓋現有條目；改在該條目的 `pending_queue` 陣列新增一筆，僅含 6 欄位（`deploy_date`、`stg_date`、`deploy_issue_key`、`deploy_issue_url`、`epic_key`、`notify_channel`）。待前張單轉「簽核中」成功，`collect_prs.py` 自動啟用下一筆。二次上線條目另帶 `reentry`（見「二次上線流程」R3）。
+> **同產品已有 active 條目時（第二張以上上線單）**：不覆蓋現有條目；改在該條目的 `pending_queue` 陣列新增一筆，僅含 6 欄位（`deploy_date`、`stg_date`、`deploy_issue_key`、`deploy_issue_url`、`epic_key`、`notify_channel`）。待前張單簽核完成（或終止），`collect_prs.py` 自動啟用下一筆。二次上線條目另帶 `reentry`（見「二次上線流程」R3）。
 
 ### 推送更新（推分支，不直接 push main）
 
@@ -717,9 +720,9 @@ hotfix 單：{jira_url}
 ### 自動階段（GitHub Actions；Claude 不執行）
 
 1. **通知①**：不發（push 與手動補發皆不發）
-2. **保存原內容**（首次處理）：讀取上線單 Web/API 程式資訊欄位（`customfield_12324`）原內容存入 `reentry.base_text`（以 Jira REST API v2 讀取欄位實際儲存的文字，不經格式轉換），其中 PR 網址存入 `reentry.exclude_urls`；讀不到（Jira 回應錯誤，或欄位不是文字格式）時該輪不做任何事、下輪重試；至提供日 +1 仍讀不到即停止追蹤（未寫入任何內容）、發 TPM 個人通知，並接回 `pending_queue` 下一張 [AI 補充]
+2. **保存原內容**（首次處理）：讀取上線單 Web/API 程式資訊欄位（`customfield_12324`）原內容存入 `reentry.base_text`（以 Jira REST API v2 讀取欄位實際儲存的文字，不經格式轉換），其中 PR 網址存入 `reentry.exclude_urls`；讀不到（Jira 回應錯誤，或欄位不是文字格式）時該輪不做任何事、每 10 分重試，首次失敗即發 TPM 個人通知（情境 2）；至提供日 +1 仍讀不到即停止追蹤（未寫入任何內容）、發 TPM 個人通知（情境 4），並接回 `pending_queue` 下一張 [AI 補充]（暫停原因：沒有原內容就沒有排除清單，第一次上線的 PR 會被當成本次收進來）
 3. **PR 搜集**：條件同維運（STG 已 merged、PROD open、排除 title 含 hotfix），日期 token 為提供日與原上線日；排除 `exclude_urls`（第一次上線的 PR）
-4. **Web/API 程式資訊**：每次寫入＝原內容（原樣）＋分隔線＋本次 PR（格式同維運）；原內容最後一段已是同一行分隔線時不重複加
+4. **Web/API 程式資訊**：每次寫入前重新讀取欄位，以欄位目前內容為底：最後一條同一行分隔線（含）以上一字不動（含人工修改過的內容），只重新產生分隔線以下的本次 PR（格式同維運）；找不到分隔線時，於目前全文後空一行加分隔線與本次 PR。程式不會改動第一次上線內容
 
    ```
    {第一次上線內容，一字不動}
@@ -731,22 +734,42 @@ hotfix 單：{jira_url}
    • {repo 短標籤}：{本次 PROD PR}
    ```
 
-   - 寫入前重新讀取欄位，逐字比對：欄位須以原內容開頭，或與程式上次寫入的內容完全相同 [AI 補充]；不一致即不寫入，發 TPM 個人通知（僅一次），下輪再比對，一致後補寫
+   - 欄位與程式上次寫入的內容（尚未寫過時為保存的原內容）不同 → **照常寫入**，寫入成功後發 TPM 個人通知（情境 1）列出差異；不暫停、不停止搜集
+   - 讀寫欄位失敗 → 本輪不寫入，PR 照常搜集，每 10 分重試寫入；首次失敗發 TPM 個人通知（情境 3，每張單一次）[AI 補充]
    - Jira 變更歷程保留每次修改前後的全文
 5. **STG 轉單、轉「簽核中」、通知③、安全停損**：沿用維運流程（以提供日計算）
 6. **通知②**：標題「🚀 PROD PR 簽核通知｜{display_name} {提供日 YYYYMMDD} 二次上線」，內文與維運相同，PR 只列本次 PROD PR
 7. **結束**：簽核完成（或終止）後，`collect_prs.py` 自動啟用 `pending_queue` 下一筆；一般條目不帶 `reentry`
 
-**TPM 個人通知**（2 種情境，各發一次）[AI 補充]：
+**TPM 個人通知**（4 種情境）[AI 補充]：
 
-情境 1：欄位與原內容不一致（暫停寫入，繼續追蹤）
+情境 1：欄位有人工異動，已照常寫入（每次偵測到異動發一次；「本次寫入覆蓋的分隔線以下內容」沒有就不列）
 ```
-⚠️ {product_name}：二次上線 Web/API 程式資訊欄位與原內容不一致，已暫停寫入。
-{issue_key} 第一次上線內容與系統保存版本不同，請人工確認。
+⚠️ {product_name}：二次上線 Web/API 程式資訊欄位有人工異動，已照常寫入本次 PR。
+{issue_key} 異動內容（- 程式上次寫入／+ 目前欄位）：
+- {程式上次寫入的行}
++ {目前欄位的行}
+本次寫入覆蓋的分隔線以下內容：
+- {被覆蓋的行}
+分隔線以上（第一次上線內容）程式未變動。
 上線單：{jira_url}
 ```
 
-情境 2：至提供日 +1 仍讀不到原內容（停止追蹤）
+情境 2：首次保存原內容讀不到（本輪暫停搜集，每 10 分重試；每張單一次）
+```
+⚠️ {product_name}：二次上線讀不到 Web/API 程式資訊原內容，本輪暫停搜集。
+{issue_key} 每 10 分鐘重試；至提供日 +1 仍讀不到即停止追蹤（不寫入任何內容）。
+上線單：{jira_url}
+```
+
+情境 3：寫入時讀寫欄位失敗（PR 搜集照常，每 10 分重試寫入；每張單一次）
+```
+⚠️ {product_name}：二次上線 Web/API 程式資訊欄位讀寫失敗，本輪未寫入。
+{issue_key} PR 搜集照常進行，每 10 分鐘重試寫入，成功後不另行通知。
+上線單：{jira_url}
+```
+
+情境 4：至提供日 +1 仍讀不到原內容（停止追蹤）
 ```
 ⚠️ {product_name}：二次上線讀不到 Web/API 程式資訊原內容，已停止自動追蹤。
 {issue_key} 至提供日 +1 仍無法讀取第一次上線內容，程式未寫入任何內容，請人工確認。
@@ -1090,7 +1113,7 @@ git push origin config/update-webhook-url
 | 簽核中（PROD，有 STG PR 的 repo 全找齊後轉） | 申請上線（目的地狀態名稱，程式動態尋找） |
 
 > - 轉「簽核中」時**必帶簽核主管**（`customfield_11300`，值取 `product_config.jira_sign_manager_account_id`）：workflow validator 強制，未帶回 400「請選擇簽核主管」
-> - 轉單韌性：單已在目標狀態 → 視為轉單成功（繼續發通知）；STG 若狀態已達或超過「STAGING測試中」→ 視為完成、不再重試；PROD 轉「簽核中」失敗 → 通知③僅首次發送，之後每輪重試，超過上線日 +1 仍失敗才終止；轉單失敗時 log 印出 Jira 完整錯誤訊息（HTTP code＋回應內容）
+> - 轉單韌性：單已在目標狀態 → 視為轉單成功（繼續發通知）；STG 若狀態已達或超過「STAGING測試中」→ 視為完成、不再重試；PROD 全找齊時上線單已在「線上作業中」／「Production測試中」→ 不轉單，直接發通知②並結束；已在「Production測試完成」→ 視為已簽核，不發通知②③並結束（皆 `stopped_reason=signed`）；PROD 轉「簽核中」失敗 → 通知③僅首次發送，之後每輪重試，超過上線日 +1 仍失敗才終止；轉單失敗時 log 印出 Jira 完整錯誤訊息（HTTP code＋回應內容）
 > - hotfix 單：程式**不轉任何狀態**；「緊急簽核」由 TPM 手動觸發（transition `401`「緊急上線」→ 狀態 `11611`），程式只讀狀態判斷是否發通知②（見「Hotfix 流程」節）
 
 ---
@@ -1316,7 +1339,11 @@ AUTH=(-u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Content-Type: application/json")
 - 二次上線條目：同 STG，日期 token 另加原上線日，並排除第一次上線的 PR
 
 #### 自動動作（有 STG PR 的 repo 全找齊對應 PROD PR 後；無 STG PR 的 repo 不列入、不等待）
-將主單推進到「簽核中」狀態（依目的地狀態尋找 transition）：
+先讀主單狀態：
+- 已在「線上作業中」／「Production測試中」（人工推進過「簽核中」）→ 不轉單，直接發通知②，終止（`stopped_reason=signed`）；通知②發送失敗則保持 active、下輪重試
+- 已在「Production測試完成」→ 視為已簽核，不發通知②③，終止（`stopped_reason=signed`）
+- 其他狀態 → 將主單推進到「簽核中」狀態（依目的地狀態尋找 transition）：
+
 1. **轉單成功** → 發 PROD PR 簽核通知至產品頻道（通知②，@mention 簽核人），終止（`stopped_reason=signed`）
 2. **轉單失敗** → 發 TPM 個人頻道人工提醒（teams：`tpm.teams_personal_webhook_url`／chat：`tpm.google_chat_personal_webhook_url`，**僅首次失敗發送**，以 `manual_notice_sent` 防重複），保持 active、之後每 10 分重試（如 QA 尚未把單轉到「Staging測試完成」的時序問題會自癒）；`today > 上線日 +1 日曆天` 仍失敗 → 再提醒一次並終止（`stopped_reason=manual`）
 3. **安全停損**：PROD 一直沒找齊、`today > 上線日 +1 日曆天` → 發 TPM 個人頻道告警，終止（`stopped_reason=timeout`）
@@ -1349,7 +1376,7 @@ AUTH=(-u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Content-Type: application/json")
 | 簽核中（PROD） | 申請上線（目的地狀態名稱，程式動態尋找） |
 
 > - 轉「簽核中」時**必帶簽核主管**（`customfield_11300`，值取 `product_config.jira_sign_manager_account_id`）：workflow validator 強制，未帶回 400「請選擇簽核主管」
-> - 轉單韌性：單已在目標狀態 → 視為轉單成功（繼續發通知）；STG 若狀態已達或超過「STAGING測試中」→ 視為完成、不再重試；PROD 轉「簽核中」失敗 → 通知③僅首次發送，之後每輪重試，超過上線日 +1 仍失敗才終止；轉單失敗時 log 印出 Jira 完整錯誤訊息（HTTP code＋回應內容）
+> - 轉單韌性：單已在目標狀態 → 視為轉單成功（繼續發通知）；STG 若狀態已達或超過「STAGING測試中」→ 視為完成、不再重試；PROD 全找齊時上線單已在「線上作業中」／「Production測試中」→ 不轉單，直接發通知②並結束；已在「Production測試完成」→ 視為已簽核，不發通知②③並結束（皆 `stopped_reason=signed`）；PROD 轉「簽核中」失敗 → 通知③僅首次發送，之後每輪重試，超過上線日 +1 仍失敗才終止；轉單失敗時 log 印出 Jira 完整錯誤訊息（HTTP code＋回應內容）
 > - hotfix 單：程式**不轉任何狀態**；「緊急簽核」由 TPM 手動觸發（transition `401`「緊急上線」→ 狀態 `11611`），程式只讀狀態判斷是否發通知②（見「Hotfix 流程」節）
 
 ---
@@ -1398,7 +1425,7 @@ AUTH=(-u "$JIRA_EMAIL:$JIRA_API_TOKEN" -H "Content-Type: application/json")
 | `manual_notice_sent` | 轉「簽核中」失敗時設 `true`，防止通知③重複發送（執行期才寫入；Step 5 建立時不含） |
 | `pending_queue` | 同產品第二張以上上線單暫存陣列；每筆含 `deploy_date`、`stg_date`、`deploy_issue_key`、`deploy_issue_url`、`epic_key`、`notify_channel`；現有條目簽核完成後由 `collect_prs.py` 自動啟用下一筆（執行期才寫入；Step 5 建立時初始為 `[]`） |
 | `notify_channel` | 本張單通知管道：`teams`／`chat`（Step 5／H5 依指令寫入；`pending_queue` 條目亦帶此欄位，啟用或優先序調整時一併沿用）；缺此欄位的既有條目視為 `teams` [AI 補充] |
-| `reentry` | 二次上線條目才有：`original_deploy_date`（原上線日，R3 寫入）；`base_text`（Web/API 程式資訊欄位原內容，Jira 實際儲存的文字）、`exclude_urls`（第一次上線 PR 網址）、`field_pending`（待寫入）、`guard_notice_sent`（欄位不一致通知已發）、`last_written_text`（程式上次寫入的內容）由 `collect_prs.py` 執行期寫入；隨條目於 `pending_queue` 升格／啟用時搬移，一般條目不帶此欄位 |
+| `reentry` | 二次上線條目才有：`original_deploy_date`（原上線日，R3 寫入）；`base_text`（Web/API 程式資訊欄位原內容，Jira 實際儲存的文字）、`exclude_urls`（第一次上線 PR 網址）、`field_pending`（待寫入）、`last_written_text`（程式上次寫入的內容）、`capture_fail_notice_sent`（首次保存讀不到通知已發）、`write_fail_notice_sent`（讀寫失敗通知已發）由 `collect_prs.py` 執行期寫入；隨條目於 `pending_queue` 升格／啟用時搬移，一般條目不帶此欄位 |
 
 三種終止收尾（轉單成功 signed／重試至停損日仍失敗 manual／安全停損 timeout）皆將 `status` 設為 `completed`，下次執行自動跳過。
 
