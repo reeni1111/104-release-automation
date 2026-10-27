@@ -37,7 +37,7 @@ Hotfix（state.json 條目 type=hotfix，key「{產品名} hotfix {YYYYMMDD}」�
 
 二次上線（維運條目帶 reentry；沿用已上線的上線單，排入 pending_queue 由優先序自動升格）：
     搜集以提供日（deploy_date）與原上線日（reentry.original_deploy_date）兩個日期 token，排除第一次上線已列的 PR
-    Web/API 程式資訊：首次處理時保存欄位原內容（reentry.base_content），之後每次寫入＝原內容＋「---{M/D} 二次上線---」＋本次 PR；
+    Web/API 程式資訊：首次處理時保存欄位原內容（reentry.base_text），之後每次寫入＝原內容＋「---{M/D} 二次上線---」＋本次 PR；
     寫入前比對欄位開頭與原內容，不一致即不寫入並發 TPM 個人通知（僅一次）
     STG／簽核中轉單、通知③、停損沿用維運流程；通知②標題為「{顯示名稱} {提供日} 二次上線」；不發通知①
 """
@@ -66,6 +66,7 @@ JIRA_API_TOKEN = os.environ["JIRA_API_TOKEN"]
 
 CLOUD_ID     = CONFIG["jira"]["cloud_id"]
 JIRA_BASE    = f"https://api.atlassian.com/ex/jira/{CLOUD_ID}/rest/api/3"
+JIRA_BASE_V2 = f"https://api.atlassian.com/ex/jira/{CLOUD_ID}/rest/api/2"
 JIRA_API_URL = CONFIG["jira"]["base_url"]
 
 GH_HEADERS = {
@@ -312,105 +313,100 @@ def reentry_separator_text(deploy_date_str: str) -> str:
     return f"---{int(deploy_date_str[4:6])}/{int(deploy_date_str[6:8])} 二次上線---"
 
 
-def get_web_api_field(issue_key: str, field_id: str):
-    """讀取 Web/API 程式資訊欄位（ADF）。回傳 (是否成功, content 陣列)；欄位為空回 (True, [])。"""
-    resp = requests.get(
-        f"{JIRA_BASE}/issue/{issue_key}?fields={field_id}",
-        headers=jira_headers(),
-    )
+def get_web_api_text(issue_key: str, field_id: str):
+    """以 REST API v2 讀取欄位實際儲存的文字（不經 ADF 轉換）。回傳 (是否成功, 文字)；欄位為空回 (True, "")。"""
+    resp = requests.get(f"{JIRA_BASE_V2}/issue/{issue_key}?fields={field_id}", headers=jira_headers())
     if resp.status_code != 200:
         print(f"  ⚠️  讀取 {issue_key} Web/API 程式資訊失敗: HTTP {resp.status_code}")
-        return False, []
+        return False, ""
     value = resp.json().get("fields", {}).get(field_id)
-    if not value:
-        return True, []
-    if not isinstance(value, dict):
-        print(f"  ⚠️  {issue_key} Web/API 程式資訊不是 ADF 格式，無法保存原內容")
-        return False, []
-    return True, value.get("content", [])
+    if value is None:
+        return True, ""
+    if not isinstance(value, str):
+        print(f"  ⚠️  {issue_key} Web/API 程式資訊不是文字格式，無法保存原內容")
+        return False, ""
+    return True, value.replace("\r\n", "\n")
 
 
-def _adf_projection(nodes) -> list:
-    """比對用：只取節點類型、文字、連結網址（忽略 Jira 自動附加的 localId 等屬性）。"""
-    out = []
-    for n in nodes or []:
-        if not isinstance(n, dict):
-            continue
-        hrefs = [m.get("attrs", {}).get("href") for m in (n.get("marks") or [])
-                 if isinstance(m, dict) and m.get("type") == "link"]
-        out.append([n.get("type"), n.get("text"), (n.get("attrs") or {}).get("url"),
-                    hrefs, _adf_projection(n.get("content"))])
-    return out
+def put_web_api_text(issue_key: str, field_id: str, text: str) -> bool:
+    """以 REST API v2 寫入文字（原樣存放，不經 ADF 轉換）。"""
+    resp = requests.put(f"{JIRA_BASE_V2}/issue/{issue_key}", headers=jira_headers(),
+                        json={"fields": {field_id: text}})
+    if resp.status_code not in (200, 204):
+        print(f"  ❌ Jira field update failed: {resp.status_code} {resp.text[:300]}")
+        return False
+    print(f"  ✅ Updated {issue_key} Web/API 程式資訊")
+    return True
 
 
-def _adf_text(node: dict) -> str:
-    if node.get("type") == "text":
-        return node.get("text", "")
-    return "".join(_adf_text(c) for c in (node.get("content") or []) if isinstance(c, dict))
+def build_web_api_text(stg_prs: dict, prod_prs: dict, repo_display_names: dict) -> str:
+    """本次 PR 文字，格式與第一次上線欄位實際儲存的樣式相同。"""
+    lines = ["[STG PR]"]
+    for r, urls in stg_prs.items():
+        d = repo_display_names.get(r, r.split("/")[-1])
+        if len(urls) == 1:
+            lines.append(f"* {d}：{urls[0]}")
+        else:
+            lines.append(f"* {d}：")
+            lines += [f"** {u}" for u in urls]
+    lines += ["", "[PROD PR]"]
+    for r, url in prod_prs.items():
+        d = repo_display_names.get(r, r.split("/")[-1])
+        lines.append(f"* {d}：{url}" if url else f"* {d}：")
+    return "\n".join(lines)
 
 
-def extract_pr_urls(nodes) -> list:
-    """取出原內容中所有 GitHub PR 網址（文字、連結、inlineCard 皆取）。"""
+def extract_pr_urls(text: str) -> list:
     found = []
-
-    def walk(ns):
-        for n in ns or []:
-            if not isinstance(n, dict):
-                continue
-            texts = [n.get("text") or "", (n.get("attrs") or {}).get("url") or ""]
-            texts += [(m.get("attrs") or {}).get("href") or "" for m in (n.get("marks") or [])
-                      if isinstance(m, dict)]
-            for s in texts:
-                for u in re.findall(GITHUB_PR_URL_PATTERN, s):
-                    if u not in found:
-                        found.append(u)
-            walk(n.get("content"))
-
-    walk(nodes)
+    for u in re.findall(GITHUB_PR_URL_PATTERN, text or ""):
+        if u not in found:
+            found.append(u)
     return found
 
 
 def capture_reentry_base(deployment: dict, field_id: str) -> bool:
-    """二次上線首次處理：保存欄位原內容（第一次上線 PR，稽核來源）與其中的 PR 網址。"""
-    ok, nodes = get_web_api_field(deployment["deploy_issue_key"], field_id)
+    """二次上線首次處理：保存欄位原文字（第一次上線 PR，稽核來源）與其中的 PR 網址。"""
+    ok, text = get_web_api_text(deployment["deploy_issue_key"], field_id)
     if not ok:
         return False
-    deployment["reentry"]["base_content"] = nodes
-    deployment["reentry"]["exclude_urls"] = extract_pr_urls(nodes)
-    print(f"  📌 已保存原內容（{len(nodes)} 個區塊；排除第一次上線 PR {len(deployment['reentry']['exclude_urls'])} 筆）")
+    deployment["reentry"]["base_text"] = text
+    deployment["reentry"]["exclude_urls"] = extract_pr_urls(text)
+    print(f"  📌 已保存原內容（{len(text)} 字；排除第一次上線 PR {len(deployment['reentry']['exclude_urls'])} 筆）")
     return True
 
 
-def build_reentry_adf(deployment: dict, repo_display_names: dict) -> dict:
-    """二次上線欄位內容＝原內容（原樣）＋分隔線＋本次 PR（格式同 build_web_api_adf）。
-    原內容最後一個區塊已是同一行分隔線時不重複加。"""
-    base = deployment["reentry"]["base_content"]
+def build_reentry_text(deployment: dict, repo_display_names: dict) -> str:
+    """原文字（一字不動）＋分隔線＋本次 PR。原文字最後一行已是同一行分隔線時不重複加。"""
+    base = deployment["reentry"]["base_text"]
     sep  = reentry_separator_text(deployment["deploy_date"])
-    content = list(base)
-    if not (base and isinstance(base[-1], dict) and _adf_text(base[-1]).strip() == sep):
-        content.append({"type": "paragraph", "content": [{"type": "text", "text": sep}]})
-    content.extend(build_web_api_adf(deployment["stg_prs"], deployment["prod_prs"],
-                                     repo_display_names)["content"])
-    return {"version": 1, "type": "doc", "content": content}
+    last = base.rstrip("\n").split("\n")[-1].strip() if base.strip() else ""
+    if last == sep:
+        head = base
+    elif base:
+        head = base + ("" if base.endswith("\n") else "\n") + "\n" + sep
+    else:
+        head = sep
+    return head + "\n" + build_web_api_text(deployment["stg_prs"], deployment["prod_prs"], repo_display_names)
 
 
 def update_reentry_field(product_name: str, deployment: dict, field_id: str,
                          repo_display_names: dict) -> bool:
-    """二次上線寫入：先比對欄位開頭與保存的原內容，一致才寫入；
-    不一致不寫入，發 TPM 個人通知（僅一次），下一輪再比對。"""
+    """寫入前逐字比對：欄位須以原文字開頭，或與程式上次寫入的內容完全相同；否則不寫入、發 TPM 個人通知（僅一次）。"""
     reentry = deployment["reentry"]
-    ok, current = get_web_api_field(deployment["deploy_issue_key"], field_id)
+    ok, current = get_web_api_text(deployment["deploy_issue_key"], field_id)
     if not ok:
         return False
-    base = reentry["base_content"]
-    if _adf_projection(current[:len(base)]) != _adf_projection(base):
-        print("  ❌ 欄位開頭與保存的原內容不一致，暫停寫入（不覆蓋第一次上線內容）")
+    if not (current.startswith(reentry["base_text"]) or current == reentry.get("last_written_text")):
+        print("  ❌ 欄位與保存的原內容不一致，暫停寫入（不覆蓋第一次上線內容）")
         if not reentry.get("guard_notice_sent"):
             notify_reentry_guard(product_name, deployment)
             reentry["guard_notice_sent"] = True
         return False
-    return update_web_api_field(deployment["deploy_issue_key"], field_id,
-                                build_reentry_adf(deployment, repo_display_names))
+    text = build_reentry_text(deployment, repo_display_names)
+    if not put_web_api_text(deployment["deploy_issue_key"], field_id, text):
+        return False
+    reentry["last_written_text"] = text
+    return True
 
 
 # ── Notifications（Teams／Google Chat）──────────────────────────────────────────
@@ -837,7 +833,7 @@ def main():
             continue
 
         # 二次上線：首次處理先保存欄位原內容；保存失敗本輪不做任何事，下輪重試
-        if reentry and "base_content" not in reentry:
+        if reentry and "base_text" not in reentry:
             if not capture_reentry_base(deployment, field_id):
                 if today > prod_cutoff:     # 停損日仍無法保存 → 比照安全停損收尾，避免佔住追蹤位置
                     print("  ⏰ 提供日 +1 仍讀不到原內容 → 停止追蹤（未寫入任何內容），個人頻道通知，接回下一張")
